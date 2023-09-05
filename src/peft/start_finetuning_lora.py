@@ -41,6 +41,7 @@ import transformers
 from peft import (
     PromptTuningConfig,
     LoraConfig, 
+    IA3Config,
     get_peft_model,
     PromptTuningInit, 
     PromptTuningConfig, 
@@ -82,7 +83,8 @@ task_to_keys = {
     "wnli": ("sentence1", "sentence2"),
     "boolq": ("passage", "question"),
     "cb": ("premise", "hypothesis"),
-    "copa": ("premise", "choice1", "choice2", "question"),
+    "copa": ("premise", "choice1"),# "choice2", "question"),
+    "multirc": ("paragraph", "question"),#, "answer"),
 }
 
 def define_peft_config(args):
@@ -90,16 +92,24 @@ def define_peft_config(args):
 
     if args.peft_method in ["lora"]:
         peft_config = LoraConfig(
+            task_type="SEQ_CLS",
             r=args.r,
             lora_alpha=args.lora_alpha,
             target_modules=args.target_modules,#["q_proj", "v_proj", "out_proj", "fc1", "fc2"],
             lora_dropout=args.lora_dropout,
             bias=args.bias,#"none",
-            task_type="SEQ_CLS",
         )
 
     elif args.peft_method in ["adapters"]:
         peft_config = None
+
+    elif args.peft_method in ["ia_3"]:
+        peft_config = IA3Config(
+            task_type="SEQ_CLS",
+            target_modules=args.target_modules,
+            feedforward_modules=args.feedforward_modules,
+            init_ia3_weights=args.init_ia3_weights,
+        )
 
     elif args.peft_method in ["prompt_tuning", "p_tuning", "prefix_tuning"]:
         peft_config = PromptTuningConfig(
@@ -145,6 +155,7 @@ def get_model(args, num_labels):
         torch_dtype=torch.float16,#torch.float16,
         device_map='auto',
     )
+    #print(model)
 
     # freeze the model
     for param in model.parameters():
@@ -158,12 +169,24 @@ def get_model(args, num_labels):
         def forward(self, x):
             #print(x.dtype)
             return super().forward(x).to(torch.float16)
-    # model.lm_head = CastOutputToFloat(model.lm_head)
+    #model.lm_head = CastOutputToFloat(model.lm_head)
     # @TODO: ask Vlad, do we need this for classification?
-    model.classification_head = CastOutputToFloat(model.classification_head)
+    if 't5' in args.model_name_or_path:
+        model.classification_head = CastOutputToFloat(model.classification_head)
+    else:
+        model.score = CastOutputToFloat(model.score)
     
     # define tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    if tokenizer.pad_token is not None:
+        print(f"Using present PAD token in the tokenizer: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
+    else:
+        set_pad_to = tokenizer.eos_token
+        #set_pad_id = tokenizer.eos_token_id
+        tokenizer.add_special_tokens({'pad_token': set_pad_to})
+        model.config.pad_token_id = model.config.eos_token_id
+        print(f"Pointing PAD token to: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
+        
 
     # patch the model with PEFT config
     peft_config = define_peft_config(args)
@@ -199,7 +222,7 @@ def parse_args():
     parser.add_argument(
         "--task_name",
         type=str,
-        default="cb",
+        default="multirc",
         help="The name of the glue task to train on.",
         choices=list(task_to_keys.keys()),
     )
@@ -226,7 +249,7 @@ def parse_args():
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="t5-base",#"facebook/bart-base",#"t5-base",
+        default="t5-base",#"meta-llama/Llama-2-7b-hf",#"t5-base",#"facebook/bart-base",#"t5-base",
         help="Path to pretrained model or model identifier from huggingface.co/models.",
         #required=True,
     )
@@ -423,7 +446,7 @@ def parse_args():
     parser.add_argument(
         "--target_modules",
         type=Optional[Union[List[str], str]],
-        default=['q', 'v'],
+        default=['q', 'v'],#["q_proj", "v_proj"],#['k', 'v'],#['q', 'v'],
         help=(
             "List of module names or regex expression of the module names to replace with Lora."
             "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
@@ -447,7 +470,7 @@ def parse_args():
     parser.add_argument(
         "--fan_in_fan_out",
         type=bool,
-        default=False,
+        default=True,
         help=("Set this to True if the layer to replace stores weight like (fan_in, fan_out)"),
     )
 
@@ -504,6 +527,23 @@ def parse_args():
         type=int,
         default=10,
         help=("how many virtual tokens to add to vocabulary. Embeddings for these tokens will be tuned in the fine-tuning process."),
+    )
+
+    # (IA)3 arguments (some arguments are same as LoRA, so not added here)
+    parser.add_argument(
+        "--feedforward_modules", 
+        type=Optional[Union[List[str], str]],
+        default=None,
+        help=(
+            "List of module names or a regex expression of module names which are feedforward" 
+            "For example, ['output.dense']"
+        ),
+    )
+    parser.add_argument(
+        "--init_ia3_weights", 
+        type=bool,
+        default=True,
+        help=("Whether to initialize the vectors in the (IA)^3 layers."),
     )
 
     # wandb arguments
@@ -727,9 +767,19 @@ def main():
 
     def preprocess_function(examples):
         # Tokenize the texts
-        texts = (
-            (examples[sentence1_key],) if sentence2_key is None else (examples[sentence1_key], examples[sentence2_key])
-        )
+        if args.task_name == "copa":
+            texts = (
+                (examples["premise"], examples["choice1"], examples["choice1"], examples["question"])
+            )
+        elif args.task_name == "multirc":
+            texts = (
+                (examples["paragraph"], examples["question"], examples["answer"])
+            )
+        else:
+            texts = (
+                (examples[sentence1_key],) if sentence2_key is None else (examples[sentence1_key], examples[sentence2_key])
+            )
+            
         result = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
 
         if "label" in examples:
@@ -797,7 +847,7 @@ def main():
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
-        num_warmup_steps=max(100, args.max_train_steps * args.lr_scheduler_warmup_percent),#args.num_warmup_steps,
+        num_warmup_steps=int(args.max_train_steps * args.lr_scheduler_warmup_percent),#max(100, int(args.max_train_steps * args.lr_scheduler_warmup_percent)),#args.num_warmup_steps,
         num_training_steps=args.max_train_steps,
     )
 
@@ -880,15 +930,13 @@ def main():
 
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
-
+    
     # start wandb logging
-    os.environ['WANDB_PROJECT'] = args.wandb_project
     wandb.init(
         project=args.wandb_project,
         config=args,
         #tags=[args.model_name_or_path, args.task_name, args.peft_method],
     )    
-    
     #
     global_steps = 0
     for epoch in range(starting_epoch, args.num_train_epochs):
