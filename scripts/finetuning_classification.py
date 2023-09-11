@@ -55,7 +55,6 @@ from transformers import (
     get_scheduler,
     BitsAndBytesConfig,
     set_seed,
-    #AutoAdapterModel,
 )
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version

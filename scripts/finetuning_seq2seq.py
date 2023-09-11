@@ -28,7 +28,6 @@ from pathlib import Path
 import numpy as np
 
 import nltk
-import sklearn
 import datasets
 import evaluate
 import torch
@@ -40,7 +39,7 @@ from datasets import load_dataset
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import List, Optional, Union
 from dataclasses import dataclass, field
 import wandb
 
@@ -75,21 +74,9 @@ logger = get_logger(__name__)
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
 
 # You should update this to your particular problem to have better documentation of `model_type`
-#MODEL_CONFIG_CLASSES = list(MODEL_MAPPING.keys())
-#MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
-try:
-    nltk.data.find("tokenizers/punkt")
-except (LookupError, OSError):
-    if is_offline_mode():
-        raise LookupError(
-            "Offline mode: run this script without TRANSFORMERS_OFFLINE first to download nltk data files"
-        )
-    with FileLock(".lock") as lock:
-        nltk.download("punkt", quiet=True)
+nltk.data.find("tokenizers/punkt")
 
-
-#
 summarization_name_mapping = {
     "amazon_reviews_multi": ("review_body", "review_title"),
     "big_patent": ("description", "abstract"),
@@ -105,11 +92,11 @@ summarization_name_mapping = {
 }
 
 seq2seq_models = set([
-        "t5-base",
-        "t5-large",
-        "t5-3b",
-        "t5-11b",
-    ])
+    "t5-base",
+    "t5-large",
+    "t5-3b",
+    "t5-11b",
+])
 
 def define_peft_config(args):    
 
@@ -118,9 +105,9 @@ def define_peft_config(args):
             task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else "CAUSAL_LM",
             r=args.r,
             lora_alpha=args.lora_alpha,
-            target_modules=args.target_modules,#["q_proj", "v_proj", "out_proj", "fc1", "fc2"],
+            target_modules=args.target_modules,
             lora_dropout=args.lora_dropout,
-            bias=args.bias,#"none",
+            bias=args.bias,
         )
 
     elif args.peft_method in ["adapters"]:
@@ -156,7 +143,6 @@ def define_peft_config(args):
 
 
 def get_model(args):
-    
     # check free space
     free_in_GB = int(torch.cuda.mem_get_info()[0] / 1024**3)
     max_memory = f"{free_in_GB-2}GB"
@@ -169,34 +155,25 @@ def get_model(args):
 
     # define model
     if args.use_quantization: 
-        #model = AutoModelForCausalLM.from_pretrained(
-        #model = AutoModelForConditionalGeneration.from_pretrained(
         model = AutoModelForSeq2SeqLM.from_pretrained(
             args.model_name_or_path,
-            #max_memory=max_memory,
-            #num_labels=num_labels,
             quantization_config=BitsAndBytesConfig(
                 load_in_4bit=args.load_in_4bit,
                 load_in_8bit=args.load_in_8bit,
                 llm_int8_threshold=args.llm_int8_threshold,
-                #llm_int8_has_fp16_weight=quant_args.llm_int8_has_fp16_weight,
-                bnb_4bit_compute_dtype=args.torch_dtype,#torch.float16,#torch.float16,
+                bnb_4bit_compute_dtype=args.torch_dtype,
                 bnb_4bit_use_double_quant=args.bnb_4bit_use_double_quant,
                 bnb_4bit_quant_type=args.bnb_4bit_quant_type,
             ),
-            torch_dtype=args.torch_dtype,#torch.float16,#torch.bfloat16,
+            torch_dtype=args.torch_dtype,
             device_map=args.device_map,
         )
     else:
         model = AutoModelForSeq2SeqLM.from_pretrained(
             args.model_name_or_path,
-            #max_memory=max_memory,
-            #num_labels=num_labels,
-            torch_dtype=args.torch_dtype,#torch.float16,#torch.bfloat16,
+            torch_dtype=args.torch_dtype,
             device_map=args.device_map,
         )
-        
-    #print(model)
 
     # freeze the model
     for param in model.parameters():
@@ -205,29 +182,21 @@ def get_model(args):
             # cast the small parameters (e.g. layernorm) to fp32 for stability
             param.data = param.data.to(args.torch_dtype)
 
-    # keeping the model output in float-32 for LM-Head
-    class CastOutputToFloat(nn.Sequential):
-        def forward(self, x):
-            #print(x.dtype)
-            return super().forward(x).to(args.torch_dtype)
-
     # define tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     if tokenizer.pad_token is not None:
         print(f"Using present PAD token in the tokenizer: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
     else:
         set_pad_to = tokenizer.eos_token
-        #set_pad_id = tokenizer.eos_token_id
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
         model.config.pad_token_id = model.config.eos_token_id
         print(f"Pointing PAD token to: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
-        
 
     # patch the model with PEFT config
     peft_config = define_peft_config(args)
     model = get_peft_model(model, peft_config)
     print(model)
-    
+
     # Verifying the datatypes.
     print("\nPrecision details:")
     dtypes = {}
@@ -256,13 +225,13 @@ def parse_args():
     parser.add_argument(
         "--dataset_name",
         type=str,
-        default="cnn_dailymail",#None,
+        default="cnn_dailymail",
         help="The name of the dataset to use (via the datasets library).",
     )
     parser.add_argument(
         "--dataset_config_name",
         type=str,
-        default="3.0.0",#None,
+        default="3.0.0",
         help="The configuration name of the dataset to use (via the datasets library).",
     )
     parser.add_argument(
@@ -579,11 +548,11 @@ def parse_args():
 
     parser.add_argument(
         "--target_modules",
-        type=Optional[Union[List[str], str]],
+        type=str,
         default=None,#["q_proj", "v_proj"],#['k', 'v'],#['q', 'v'],
         help=(
             "List of module names or regex expression of the module names to replace with Lora."
-            "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
+            "For example, 'q,v' or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
         ),
     )
 
@@ -738,6 +707,13 @@ def parse_args():
     if args.push_to_hub:
         assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
 
+    if args.target_modules:
+        if "," in args.target_modules:
+            args.target_modules = args.target_modules.split(",")
+        if "*" in args.target_modules and "," in args.target_modules:
+            raise NotImplementedError("Combining * and , in target_modules is not supported yet.")
+        logger.info(f"Target modules: {args.target_modules}")
+
     return args
 
 
@@ -835,40 +811,6 @@ def main():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    """
-    if args.config_name:
-        config = AutoConfig.from_pretrained(args.config_name, trust_remote_code=args.trust_remote_code)
-    elif args.model_name_or_path:
-        config = AutoConfig.from_pretrained(args.model_name_or_path, trust_remote_code=args.trust_remote_code)
-    else:
-        config = CONFIG_MAPPING[args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
-
-    if args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.tokenizer_name, use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
-        )
-    elif args.model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name_or_path, use_fast=not args.use_slow_tokenizer, trust_remote_code=args.trust_remote_code
-        )
-    else:
-        raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-        )
-
-    if args.model_name_or_path:
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            args.model_name_or_path,
-            from_tf=bool(".ckpt" in args.model_name_or_path),
-            config=config,
-            trust_remote_code=args.trust_remote_code,
-        )
-    else:
-        logger.info("Training new model from scratch")
-        model = AutoModelForSeq2SeqLM.from_config(config, trust_remote_code=args.trust_remote_code)
-    """
     model, tokenizer, config = get_model(args)
     
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
