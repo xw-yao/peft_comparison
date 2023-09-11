@@ -58,6 +58,7 @@ setup(
         "rouge-score>=0.1.2",
         "wandb>=0.15.9",
         "evaluate",
+        "scipy",
     ],
     extras_require=extras,
     classifiers=[

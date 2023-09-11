@@ -1036,8 +1036,7 @@ def main():
     global_steps = 0
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
-        if True:#args.with_tracking:
-            total_loss = 0
+        total_loss = 0
         if args.resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
             # We skip the first `n` batches in the dataloader when resuming from a checkpoint
             active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
@@ -1048,10 +1047,8 @@ def main():
             outputs = model(**batch)
             loss = outputs.loss
             # We keep track of the loss at each epoch
-            if True: #args.with_tracking:
-                total_loss += loss.detach().float()
-            
-            #
+            total_loss += loss.detach().float()
+
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
             if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
@@ -1062,12 +1059,6 @@ def main():
                 completed_steps += 1
 
             # Checks if the accelerator has performed an optimization step behind the scenes
-            """
-            if accelerator.sync_gradients:
-                progress_bar.update(1)
-                completed_steps += 1
-            """
-
             if isinstance(checkpointing_steps, int):
                 if completed_steps % checkpointing_steps == 0:
                     output_dir = f"step_{completed_steps }"
