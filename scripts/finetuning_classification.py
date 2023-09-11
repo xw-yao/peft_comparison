@@ -21,7 +21,6 @@ import os
 import random
 from pathlib import Path
 
-import sklearn
 import datasets
 import evaluate
 import torch
@@ -33,7 +32,7 @@ from datasets import load_dataset
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import List, Optional, Union
 from dataclasses import dataclass, field
 import wandb
 
@@ -45,11 +44,8 @@ from peft import (
     get_peft_model,
     PromptTuningInit, 
     PromptTuningConfig, 
-    TaskType, 
-    PeftType,
 )
 from transformers import (
-    AutoConfig,
     AutoModelForSequenceClassification,
     AutoTokenizer,
     DataCollatorWithPadding,
