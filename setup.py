@@ -47,6 +47,16 @@ setup(
         "tqdm",
         "accelerate",
         "safetensors",
+        # need few additional packages
+        "absl-py",
+        "bitsandbytes>=0.41.1",
+        "datasets",
+        "deepspeed",
+        "peft>=0.5.0",
+        "prompt-toolkit>=3.0.39",
+        "sentencepiece>=0.1.99",
+        "rouge-score>=0.1.2",
+        "wandb>=0.15.9",
     ],
     extras_require=extras,
     classifiers=[
