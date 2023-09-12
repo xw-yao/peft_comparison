@@ -1072,9 +1072,6 @@ def main():
                 },
                 step=completed_steps,
             )
-            if step >= 1:
-                print("exit training...")
-                break
             
             if (step) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
                 model.eval()
@@ -1119,7 +1116,6 @@ def main():
                     
                     #
                     if (not step == len(train_dataloader) - 1) and (step_eval > 10):
-                        print("Doing short eval...")
                         break
 
                 result = metric.compute(use_stemmer=True)
