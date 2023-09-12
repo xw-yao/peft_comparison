@@ -123,7 +123,7 @@ else
         --peft_method "prefix_tuning" \
         --num_virtual_tokens 20 \
         --per_device_train_batch_size 16 \
-        --per_device_eval_batch_size 32 \
+        --per_device_eval_batch_size 16 \
         --gradient_accumulation_steps 2 \
         --use_quantization false \
         --load_in_4bit false \
