@@ -18,7 +18,7 @@ else
         --target_modules "q, v" \
         --per_device_train_batch_size 2 \
         --per_device_eval_batch_size 4 \
-        --gradient_accumulation_steps 16 \
+        --gradient_accumulation_steps 2 \
         --device_map "auto" \
         --use_quantization true \
         --load_in_4bit true \
@@ -32,7 +32,7 @@ else
         --num_train_epochs 1 \
         --eval_every_steps 1 \
         --wandb_project "PEFT_comparison" \
-        --source_prefix "summarize: " \
+        --source_prefix "summarize: "
 
     echo "FINISHED EXP $experiment_name!!!"
 fi
@@ -53,7 +53,7 @@ else
         --target_modules "k, v" \
         --per_device_train_batch_size 2 \
         --per_device_eval_batch_size 4 \
-        --gradient_accumulation_steps 16 \
+        --gradient_accumulation_steps 2 \
         --device_map "auto" \
         --use_quantization true \
         --load_in_4bit true \
@@ -88,9 +88,9 @@ else
         --num_virtual_tokens 20 \
         --prompt_tuning_init "text" \
         --prompt_tuning_init_text "summarize the following document " \
-        ---per_device_train_batch_size 2 \
+        --per_device_train_batch_size 2 \
         --per_device_eval_batch_size 4 \
-        --gradient_accumulation_steps 16 \
+        --gradient_accumulation_steps 2 \
         --device_map "auto" \
         --use_quantization true \
         --load_in_4bit true \
@@ -125,7 +125,7 @@ else
         --num_virtual_tokens 20 \
         --per_device_train_batch_size 2 \
         --per_device_eval_batch_size 4 \
-        --gradient_accumulation_steps 16 \
+        --gradient_accumulation_steps 2 \
         --device_map "auto" \
         --use_quantization true \
         --load_in_4bit true \

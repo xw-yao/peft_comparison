@@ -20,7 +20,7 @@ else
         --target_modules "q, v" \
         --per_device_train_batch_size 4 \
         --per_device_eval_batch_size 8 \
-        --gradient_accumulation_steps 8 \
+        --gradient_accumulation_steps 1 \
         --use_quantization false \
         --load_in_4bit false \
         --max_source_length 1024 \
@@ -90,7 +90,7 @@ else
         --prompt_tuning_init_text "summarize the following document " \
         --per_device_train_batch_size 4 \
         --per_device_eval_batch_size 8 \
-        --gradient_accumulation_steps 8 \
+        --gradient_accumulation_steps 1 \
         --use_quantization false \
         --load_in_4bit false \
         --max_source_length 1024 \

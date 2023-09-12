@@ -18,9 +18,9 @@ else
         --lora_alpha 16 \
         --lora_dropout 0 \
         --target_modules "q, v" \
-        --per_device_train_batch_size 8 \
+        --per_device_train_batch_size 4 \
         --per_device_eval_batch_size 16 \
-        --gradient_accumulation_steps 4 \
+        --gradient_accumulation_steps 1 \
         --use_quantization false \
         --load_in_4bit false \
         --max_source_length 1024 \
@@ -52,9 +52,9 @@ else
         --dataset_config_name "3.0.0" \
         --peft_method "ia_3" \
         --target_modules "k, v" \
-        --per_device_train_batch_size 8 \
+        --per_device_train_batch_size 4 \
         --per_device_eval_batch_size 16 \
-        --gradient_accumulation_steps 4 \
+        --gradient_accumulation_steps 1 \
         --use_quantization false \
         --load_in_4bit false \
         --max_source_length 1024 \
@@ -88,9 +88,9 @@ else
         --num_virtual_tokens 20 \
         --prompt_tuning_init "text" \
         --prompt_tuning_init_text "summarize the following document " \
-        --per_device_train_batch_size 8 \
+        --per_device_train_batch_size 4 \
         --per_device_eval_batch_size 16 \
-        --gradient_accumulation_steps 4 \
+        --gradient_accumulation_steps 1 \
         --use_quantization false \
         --load_in_4bit false \
         --max_source_length 1024 \
@@ -122,8 +122,8 @@ else
         --dataset_config_name "3.0.0" \
         --peft_method "prefix_tuning" \
         --num_virtual_tokens 20 \
-        --per_device_train_batch_size 32 \
-        --per_device_eval_batch_size 64 \
+        --per_device_train_batch_size 4 \
+        --per_device_eval_batch_size 16 \
         --gradient_accumulation_steps 1 \
         --use_quantization false \
         --load_in_4bit false \
