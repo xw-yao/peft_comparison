@@ -712,7 +712,7 @@ def parse_args():
             args.target_modules = args.target_modules.split(",")
         if "*" in args.target_modules and "," in args.target_modules:
             raise NotImplementedError("Combining * and , in target_modules is not supported yet.")
-        logger.info(f"Target modules: {args.target_modules}")
+        
 
     return args
 
@@ -1058,14 +1058,6 @@ def main():
                 progress_bar.update(1)
                 completed_steps += 1
 
-            # Checks if the accelerator has performed an optimization step behind the scenes
-            if isinstance(checkpointing_steps, int):
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps }"
-                    if args.output_dir is not None:
-                        output_dir = os.path.join(args.output_dir, output_dir)
-                    accelerator.save_state(output_dir)
-
             if completed_steps >= args.max_train_steps:
                 break
 
@@ -1080,8 +1072,11 @@ def main():
                 },
                 step=completed_steps,
             )
+            if step >= 1:
+                print("exit training...")
+                break
             
-            if (step + 1) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
+            if (step) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
                 model.eval()
                 gen_kwargs = {
                     "max_length": args.val_max_target_length,
@@ -1123,7 +1118,8 @@ def main():
                         )
                     
                     #
-                    if step_eval > 100:
+                    if (not step == len(train_dataloader) - 1) and (step_eval > 10):
+                        print("Doing short eval...")
                         break
 
                 result = metric.compute(use_stemmer=True)
@@ -1149,39 +1145,19 @@ def main():
                     step=completed_steps,
                 )
                 model.train()
-
-        if args.push_to_hub and epoch < args.num_train_epochs - 1:
-            accelerator.wait_for_everyone()
-            unwrapped_model = accelerator.unwrap_model(model)
-            unwrapped_model.save_pretrained(
-                args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-            )
-            if accelerator.is_main_process:
-                tokenizer.save_pretrained(args.output_dir)
-                repo.push_to_hub(
-                    commit_message=f"Training in progress epoch {epoch}", blocking=False, auto_lfs_prune=True
-                )
-
-        if args.checkpointing_steps == "epoch":
-            output_dir = f"epoch_{epoch}"
-            if args.output_dir is not None:
-                output_dir = os.path.join(args.output_dir, output_dir)
-            accelerator.save_state(output_dir)
-
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-        )
-        if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir)
-            if args.push_to_hub:
-                repo.push_to_hub(commit_message="End of training", auto_lfs_prune=True)
-
-            all_results = {f"eval_{k}": v for k, v in result.items()}
-            with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-                json.dump(all_results, f)
+    
+    # save results
+    all_results = {f"eval_{k}": v for k, v in result.items()}
+    with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+        json.dump(all_results, f)
+    
+    # save all arguments
+    with open(os.path.join(args.output_dir, "all_inputs.json"), "w") as f:
+        args_dict = vars(args)
+        for k, v in args_dict.items():
+            if not isinstance(v, (float, int, bool, str, list)):
+                args_dict[k] = str(v)
+        json.dump(args_dict, f, indent=4)
 
 
 if __name__ == "__main__":
