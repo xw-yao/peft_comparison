@@ -983,7 +983,7 @@ def main():
                 wandb.log(
                     {
                         "Eval/accuracy" if args.task_name is not None else "Eval/glue": eval_metric,
-                        "Eval/total_train_loss": epoch_loss.item() / len(train_dataloader),
+                        "Eval/total_train_loss": epoch_loss / len(train_dataloader),
                         "Eval/epoch": epoch,
                         "Eval/par_updates": update_step,
                         "Eval/global_steps": global_steps,
@@ -1010,7 +1010,7 @@ def main():
     wandb.log(
         {
             "Eval/accuracy" if args.task_name is not None else "Eval/glue": eval_metric,
-            "Eval/total_train_loss": epoch_loss.item() / len(train_dataloader),
+            "Eval/total_train_loss": epoch_loss / len(train_dataloader),
             "Eval/epoch": epoch,
             "Eval/par_updates": update_step,
             "Eval/global_steps": global_steps,
@@ -1037,6 +1037,7 @@ def main():
 
         eval_metric = metric.compute()
         logger.info(f"mnli-mm: {eval_metric}")
+        wandb.log({"Eval/mnli-mm": eval_metric}, step=update_step)
 
     # save results
     all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
