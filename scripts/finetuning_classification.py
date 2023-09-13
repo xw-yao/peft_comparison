@@ -446,11 +446,11 @@ def parse_args():
 
     parser.add_argument(
         "--target_modules",
-        type=Optional[Union[List[str], str]],
-        default=["q_proj", "v_proj"],
+        type=str,
+        default=None,#["q_proj", "v_proj"],#['k', 'v'],#['q', 'v'],
         help=(
             "List of module names or regex expression of the module names to replace with Lora."
-            "For example, ['q', 'v'] or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
+            "For example, 'q,v' or '.*decoder.*(SelfAttention|EncDecAttention).*(q|v)$' "
         ),
     )
 
@@ -558,10 +558,11 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--wandb_tags",
+        "--wandb_tags", 
         type=str,
         default=None,
-        help=("tags to be given to individual runs in WandB repository"),
+        help=("tags to be given to individual runs in WandB repository, \
+              e.g. 'trial, t5-base, classification' "),
     )
 
     parser.add_argument(
@@ -616,7 +617,7 @@ def main():
         if args.gradient_accumulation_steps is not None:
             logger.warning("`--total_batch_size` overrides --gradient_accumulation_steps")
         assert args.total_batch_size % accelerator.num_processes == 0, "`--total_batch_size` has to be divisible by the number of processes."
-        args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
+        args.gradient_accumulation_steps = max(1, args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes))
         logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
     else:
         args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
@@ -911,7 +912,7 @@ def main():
                     output_dir = f"step_{completed_steps }"
                     if args.output_dir is not None:
                         output_dir = os.path.join(args.output_dir, output_dir)
-                    accelerator.save_state(output_dir)
+                        #accelerator.save_state(output_dir)
 
             if completed_steps >= args.max_train_steps:
                 break
@@ -977,7 +978,7 @@ def main():
             output_dir = f"epoch_{epoch}"
             if args.output_dir is not None:
                 output_dir = os.path.join(args.output_dir, output_dir)
-            accelerator.save_state(output_dir)
+                #accelerator.save_state(output_dir)
 
     if args.with_tracking:
         accelerator.end_training()
@@ -1011,10 +1012,18 @@ def main():
         eval_metric = metric.compute()
         logger.info(f"mnli-mm: {eval_metric}")
 
-    if args.output_dir is not None:
-        all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
-        with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-            json.dump(all_results, f)
+    # save results
+    all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
+    with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+        json.dump(all_results, f, indent=4)
+    
+    # save all arguments
+    with open(os.path.join(args.output_dir, "all_inputs.json"), "w") as f:
+        args_dict = vars(args)
+        for k, v in args_dict.items():
+            if not isinstance(v, (float, int, bool, str, list)):
+                args_dict[k] = str(v)
+        json.dump(args_dict, f, indent=4)
 
     wandb.save(os.path.abspath(__file__), policy="now") # save current script
     wandb.finish()

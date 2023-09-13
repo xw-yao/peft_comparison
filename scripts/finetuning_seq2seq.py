@@ -751,7 +751,7 @@ def main():
         if args.gradient_accumulation_steps is not None:
             logger.warning("`--total_batch_size` overrides --gradient_accumulation_steps")
         assert args.total_batch_size % accelerator.num_processes == 0, "`--total_batch_size` has to be divisible by the number of processes."
-        args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
+        args.gradient_accumulation_steps = max(1, args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes))
         logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
     else:
         args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
