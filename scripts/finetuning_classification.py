@@ -19,7 +19,6 @@ import math
 import os
 import random
 from typing import List, Optional, Union
-from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -290,7 +289,7 @@ def parse_args():
         "--lr_scheduler_warmup_percent", type=float, default=0.06, help="Percentage of steps for the warmup in the lr scheduler."
     )
     parser.add_argument(
-        "--eval_every", type=int, default=None,
+        "--eval_every_steps", type=int, default=None,
         help="Run an evaluation every X steps. By default runs either every 1K steps or 10 times during training (whichever is smaller)."
     )
     parser.add_argument("--output_dir", type=str, default="./results", help="Where to store the final model.")
@@ -594,6 +593,28 @@ def parse_args():
     return args
 
 
+def evaluate_model(model, *, eval_dataloader, accelerator, is_regression, metric):
+    model.eval()
+    samples_seen = 0
+    for step, batch in enumerate(eval_dataloader):
+        with torch.no_grad():
+            outputs = model(**batch)
+        predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
+        predictions, references = accelerator.gather((predictions, batch["labels"]))
+        # If we are in a multiprocess environment, the last batch has duplicates
+        if accelerator.num_processes > 1:
+            if step == len(eval_dataloader) - 1:
+                predictions = predictions[: len(eval_dataloader.dataset) - samples_seen]
+                references = references[: len(eval_dataloader.dataset) - samples_seen]
+            else:
+                samples_seen += references.shape[0]
+        metric.add_batch(predictions=predictions, references=references)
+    model.train()
+
+    eval_metric = metric.compute()
+    return eval_metric
+
+
 def main():
     args = parse_args()
 
@@ -603,6 +624,11 @@ def main():
     accelerator = Accelerator(log_with="wandb", project_dir=args.output_dir)
     logger.info(f"Started global rank {accelerator.process_index}, device: {torch.cuda.current_device()}")
     args.num_processes = accelerator.num_processes
+
+    if args.num_processes:
+        logger.warning("!" * 40)
+        logger.warning("Num processes > 1 is not tested. The code assumes that this is the DDP world size and it might not work with model parallel or FSDP")
+        logger.warning("!" * 40)
 
     if args.total_batch_size is not None:
         if args.gradient_accumulation_steps is not None:
@@ -614,6 +640,8 @@ def main():
 
         args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
         logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
+        # TODO: this won't work with any distributed training, only with DDP
+        # If you decide to use fsdp, this needs to be updated!
     else:
         args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
 
@@ -644,11 +672,11 @@ def main():
     # Labels
     if args.task_name is not None:
         is_regression = args.task_name == "stsb"
-        if not is_regression:
+        if is_regression:
+            num_labels = 1
+        else:
             label_list = raw_datasets["train"].features["label"].names
             num_labels = len(label_list)
-        else:
-            num_labels = 1
     else:
         # Trying to have good defaults here, don't hesitate to tweak to your needs.
         is_regression = raw_datasets["train"].features["label"].dtype in ["float32", "float64"]
@@ -780,7 +808,9 @@ def main():
     ]
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
-    # Scheduler and math around the number of training steps.
+    # Scheduler and math around the number of training steps
+    # NOTE: all of this overcomplicated logic of setting the train steps is needed,
+    # because accelerate supports not just data-parallel, but FSDP and so on
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
@@ -802,9 +832,16 @@ def main():
     # We need to recalculate our total training steps as the size of the training dataloader may have changed
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
+        # NOTE: all of this overcomplicated logic of setting the train steps is needed,
+        # because accelerate supports not just data-parallel, but FSDP and so on
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+
+    if args.eval_every_steps is None:
+        args.eval_every_steps = min(1000, args.max_train_steps // 10)
+        args.eval_every_steps = max(100, args.eval_every_steps)
+        logger.info(f"Will evaluate every {args.eval_every_steps} steps")
 
     # Figure out how many steps we should save the Accelerator states
     checkpointing_steps = args.checkpointing_steps
@@ -830,7 +867,7 @@ def main():
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
-    completed_steps = 0
+    update_step = 0
     starting_epoch = 0
 
     # Potentially load in the weights and states from a previous save
@@ -854,16 +891,16 @@ def main():
         if "epoch" in training_difference:
             starting_epoch = int(training_difference.replace("epoch_", "")) + 1
             resume_step = None
-            completed_steps = starting_epoch * num_update_steps_per_epoch
+            update_step = starting_epoch * num_update_steps_per_epoch
         else:
             # need to multiply `gradient_accumulation_steps` to reflect real steps
             resume_step = int(training_difference.replace("step_", "")) * args.gradient_accumulation_steps
             starting_epoch = resume_step // len(train_dataloader)
             resume_step -= starting_epoch * len(train_dataloader)
-            completed_steps = resume_step // args.gradient_accumulation_step
+            update_step = resume_step // args.gradient_accumulation_step
 
     # update the progress_bar if load from checkpoint
-    progress_bar.update(completed_steps)
+    progress_bar.update(update_step)
 
     # start wandb logging
     wandb.init(project=args.wandb_project, config=args)
@@ -877,7 +914,7 @@ def main():
         epoch_loss = 0
 
         for step, batch in enumerate(active_dataloader):
-            if completed_steps >= args.max_train_steps:
+            if update_step >= args.max_train_steps:
                 break
 
             global_steps += 1
@@ -896,16 +933,16 @@ def main():
             lr_scheduler.step()
             optimizer.zero_grad()
             progress_bar.update(1)
-            completed_steps += 1
+            update_step += 1
 
             if isinstance(checkpointing_steps, int):
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps }"
+                if update_step % checkpointing_steps == 0:
+                    output_dir = f"step_{update_step }"
                     if args.output_dir is not None:
                         output_dir = os.path.join(args.output_dir, output_dir)
-                        #accelerator.save_state(output_dir)
+                        # accelerator.save_state(output_dir)
 
-            if completed_steps >= args.max_train_steps:
+            if update_step >= args.max_train_steps:
                 break
 
             # to wandb
@@ -914,51 +951,39 @@ def main():
                     "Train/loss_per_effective_batch": loss,
                     "Train/learning_rate": optimizer.param_groups[0]["lr"],
                     "Train/epoch": epoch,
-                    "Train/par_updates": completed_steps,
+                    "Train/par_updates": update_step,
                     "Train/global_steps": global_steps,
                 },
-                step=completed_steps,
+                step=update_step,
             )
 
             if isinstance(checkpointing_steps, int):
-                if completed_steps % checkpointing_steps == 0:
-                    output_dir = f"step_{completed_steps }"
+                if update_step % checkpointing_steps == 0:
+                    output_dir = f"step_{update_step }"
                     if args.output_dir is not None:
                         output_dir = os.path.join(args.output_dir, output_dir)
                     accelerator.save_state(output_dir)
 
-        model.eval()
-        samples_seen = 0
-        for step, batch in enumerate(eval_dataloader):
-            with torch.no_grad():
-                outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1) if not is_regression else outputs.logits.squeeze()
-            predictions, references = accelerator.gather((predictions, batch["labels"]))
-            # If we are in a multiprocess environment, the last batch has duplicates
-            if accelerator.num_processes > 1:
-                if step == len(eval_dataloader) - 1:
-                    predictions = predictions[: len(eval_dataloader.dataset) - samples_seen]
-                    references = references[: len(eval_dataloader.dataset) - samples_seen]
-                else:
-                    samples_seen += references.shape[0]
-            metric.add_batch(
-                predictions=predictions,
-                references=references,
-            )
+            if update_step % args.eval_every_steps == 0:
+                eval_metric = evaluate_model(
+                    model=model,
+                    eval_dataloader=eval_dataloader,
+                    accelerator=accelerator,
+                    is_regression=is_regression,
+                    metric=metric,
+                )
+                logger.info(f"update step {update_step}: {eval_metric}")
 
-        eval_metric = metric.compute()
-        logger.info(f"epoch {epoch}: {eval_metric}")
-
-        wandb.log(
-            {
-                "Eval/accuracy" if args.task_name is not None else "Eval/glue": eval_metric,
-                "Eval/total_train_loss": epoch_loss.item() / len(train_dataloader),
-                "Eval/epoch": epoch,
-                "Eval/par_updates": completed_steps,
-                "Eval/global_steps": global_steps,
-            },
-            step=completed_steps,
-        )
+                wandb.log(
+                    {
+                        "Eval/accuracy" if args.task_name is not None else "Eval/glue": eval_metric,
+                        "Eval/total_train_loss": epoch_loss.item() / len(train_dataloader),
+                        "Eval/epoch": epoch,
+                        "Eval/par_updates": update_step,
+                        "Eval/global_steps": global_steps,
+                    },
+                    step=update_step,
+                )
 
         if args.checkpointing_steps == "epoch":
             output_dir = f"epoch_{epoch}"
@@ -966,14 +991,26 @@ def main():
                 output_dir = os.path.join(args.output_dir, output_dir)
                 # accelerator.save_state(output_dir)
 
-    if args.output_dir is not None:
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(
-            args.output_dir, is_main_process=accelerator.is_main_process, save_function=accelerator.save
-        )
-        if accelerator.is_main_process:
-            tokenizer.save_pretrained(args.output_dir)
+    # final evaluation
+    eval_metric = evaluate_model(
+        model=model,
+        eval_dataloader=eval_dataloader,
+        accelerator=accelerator,
+        is_regression=is_regression,
+        metric=metric,
+    )
+    logger.info(f"Final evaluation: {eval_metric}")
+
+    wandb.log(
+        {
+            "Eval/accuracy" if args.task_name is not None else "Eval/glue": eval_metric,
+            "Eval/total_train_loss": epoch_loss.item() / len(train_dataloader),
+            "Eval/epoch": epoch,
+            "Eval/par_updates": update_step,
+            "Eval/global_steps": global_steps,
+        },
+        step=update_step,
+    )
 
     if args.task_name == "mnli":
         # Final evaluation on mismatched validation set
