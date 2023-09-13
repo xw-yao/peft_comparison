@@ -584,6 +584,12 @@ def parse_args():
 
     if args.per_device_eval_batch_size is None:
         args.per_device_eval_batch_size = args.per_device_train_batch_size
+    
+    if args.target_modules:
+        if "," in args.target_modules:
+            args.target_modules = args.target_modules.split(",")
+        if "*" in args.target_modules and "," in args.target_modules:
+            raise NotImplementedError("Combining * and , in target_modules is not supported yet.")
 
     if args.wandb_tags is not None:
         args.wandb_tags = args.wandb_tags.split(",")
@@ -850,7 +856,7 @@ def main():
 
     experiment_config = vars(args)
     experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
-    accelerator.init_trackers("glue_no_trainer", experiment_config)
+    #accelerator.init_trackers("glue_no_trainer", experiment_config)
 
     # Get the metric function
     metric = evaluate.load("super_glue", args.task_name)

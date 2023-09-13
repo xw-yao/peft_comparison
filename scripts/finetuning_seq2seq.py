@@ -996,7 +996,7 @@ def main():
         experiment_config = vars(args)
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
-        accelerator.init_trackers("summarization_no_trainer", experiment_config)
+        #accelerator.init_trackers("summarization_no_trainer", experiment_config)
 
     # Metric
     metric = evaluate.load("rouge")
