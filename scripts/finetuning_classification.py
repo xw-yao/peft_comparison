@@ -1053,7 +1053,7 @@ def main():
         json.dump(args_dict, f, indent=4)
 
     wandb.save(os.path.abspath(__file__), policy="now")
-    accelerator.end_training()
+    #accelerator.end_training()
 
     logger.info("Script finished succesfully")
 
