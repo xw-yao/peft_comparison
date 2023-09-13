@@ -524,26 +524,44 @@ def parse_args():
         ),
     )
 
-    # promp-tuning arguments
+    # promp-tuning, prefix-tuning and p-tuning arguments
     parser.add_argument(
-        "--num_virtual_tokens",
+        "--num_virtual_tokens", 
         type=int,
-        default=10,
+        default=20,
         help=("how many virtual tokens to add to vocabulary. Embeddings for these tokens will be tuned in the fine-tuning process."),
+    )
+    parser.add_argument(
+        "--prompt_tuning_init", 
+        type=str,
+        default="text",
+        help=("Initialize virtual tokens from text or randomly"),
+    )
+    parser.add_argument(
+        "--prompt_tuning_init_text", 
+        type=str,
+        default="text",
+        help=("If initialization strategy is \"Text\" then, text given to this argument will be used to initialize the virtual tokens"),
+    )
+    parser.add_argument(
+        "--prefix_projection", 
+        type=bool,
+        default=True,
+        help=("Use a two-layer MLP to encode the prefix"),
     )
 
     # (IA)3 arguments (some arguments are same as LoRA, so not added here)
     parser.add_argument(
-        "--feedforward_modules",
+        "--feedforward_modules", 
         type=Optional[Union[List[str], str]],
         default=None,
         help=(
-            "List of module names or a regex expression of module names which are feedforward"
+            "List of module names or a regex expression of module names which are feedforward" 
             "For example, ['output.dense']"
         ),
     )
     parser.add_argument(
-        "--init_ia3_weights",
+        "--init_ia3_weights", 
         type=bool,
         default=True,
         help=("Whether to initialize the vectors in the (IA)^3 layers."),
@@ -551,7 +569,7 @@ def parse_args():
 
     # wandb arguments
     parser.add_argument(
-        "--wandb_project",
+        "--wandb_project", 
         type=str,
         default="PEFT_comparison",
         help=("name to be given to Weight and Biases logging repository"),
@@ -566,7 +584,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--wandb_name",
+        "--wandb_name", 
         type=str,
         default=None,
         help=("display name for the run"),
