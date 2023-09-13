@@ -354,6 +354,12 @@ def parse_args():
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(
+        "--total_batch_size",
+        type=int,
+        default=32,
+        help="Total batch size (per_device_batch_size * num_devices * gradient_accumulation)",
+    )
+    parser.add_argument(
         "--learning_rate",
         type=float,
         default=5e-5,
@@ -678,9 +684,10 @@ def parse_args():
 
     parser.add_argument(
         "--wandb_tags", 
-        type=list,
-        default=["trial", "t5-base", "classification"],
-        help=("tags to be given to individual runs in WandB repository"),
+        type=str,
+        default=None,
+        help=("tags to be given to individual runs in WandB repository, \
+              e.g. 'trial, t5-base, classification' "),
     )
 
     parser.add_argument(
@@ -712,7 +719,11 @@ def parse_args():
             args.target_modules = args.target_modules.split(",")
         if "*" in args.target_modules and "," in args.target_modules:
             raise NotImplementedError("Combining * and , in target_modules is not supported yet.")
-        
+    
+    if args.wandb_tags is not None:
+        args.wandb_tags = args.wandb_tags.split(",")
+        if "seq2seq" not in args.wandb_tags:
+            args.wandb_tags.append("seq2seq")
 
     return args
 
@@ -734,6 +745,18 @@ def main():
 
     #accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
     accelerator = Accelerator(**accelerator_log_kwargs)
+    
+    #
+    if args.total_batch_size is not None:
+        if args.gradient_accumulation_steps is not None:
+            logger.warning("`--total_batch_size` overrides --gradient_accumulation_steps")
+        assert args.total_batch_size % accelerator.num_processes == 0, "`--total_batch_size` has to be divisible by the number of processes."
+        args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
+        logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
+    else:
+        args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
+    
+    #
     if args.source_prefix is None and args.model_name_or_path in [
         "t5-small",
         "t5-base",
@@ -1073,7 +1096,7 @@ def main():
                 step=completed_steps,
             )
             
-            if (step) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
+            if (step + 1) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
                 model.eval()
                 gen_kwargs = {
                     "max_length": args.val_max_target_length,
@@ -1145,7 +1168,7 @@ def main():
     # save results
     all_results = {f"eval_{k}": v for k, v in result.items()}
     with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-        json.dump(all_results, f)
+        json.dump(all_results, f, indent=4)
     
     # save all arguments
     with open(os.path.join(args.output_dir, "all_inputs.json"), "w") as f:
@@ -1155,6 +1178,9 @@ def main():
                 args_dict[k] = str(v)
         json.dump(args_dict, f, indent=4)
 
+    #
+    wandb.save(os.path.abspath(__file__), policy="now") # save current script
+    wandb.finish()
 
 if __name__ == "__main__":
     main()
