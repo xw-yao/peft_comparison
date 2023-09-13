@@ -31,7 +31,7 @@ else
         --lr_scheduler_warmup_percent 0.06 \
         --weight_decay 0 \
         --num_train_epochs 1 \
-        --eval_every_steps 1 \
+        --eval_every_steps 1000 \
         --wandb_project "PEFT_comparison" \
         --source_prefix "summarize: " \
 
@@ -65,7 +65,7 @@ else
         --lr_scheduler_warmup_percent 0.06 \
         --weight_decay 0 \
         --num_train_epochs 1 \
-        --eval_every_steps 1 \
+        --eval_every_steps 1000 \
         --wandb_project "PEFT_comparison" \
         --source_prefix "summarize: " \
 
@@ -101,7 +101,7 @@ else
         --lr_scheduler_warmup_percent 0.06 \
         --weight_decay 0 \
         --num_train_epochs 1 \
-        --eval_every_steps 1 \
+        --eval_every_steps 1000 \
         --wandb_project "PEFT_comparison" \
         --source_prefix "summarize: " \
 
@@ -135,7 +135,7 @@ else
         --lr_scheduler_warmup_percent 0.06 \
         --weight_decay 0 \
         --num_train_epochs 1 \
-        --eval_every_steps 1 \
+        --eval_every_steps 1000 \
         --wandb_project "PEFT_comparison" \
         --source_prefix "summarize: " \
 
