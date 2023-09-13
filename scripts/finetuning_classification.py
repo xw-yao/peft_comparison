@@ -256,8 +256,20 @@ def parse_args():
     parser.add_argument(
         "--per_device_eval_batch_size",
         type=int,
-        default=8,
+        default=None,
         help="Batch size (per device) for the evaluation dataloader.",
+    )
+    parser.add_argument(
+        "--total_batch_size",
+        type=int,
+        default=32,
+        help="Total batch size (per_device_batch_size * num_devices * gradient_accumulation)",
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=None,
+        help="(Not recommended, use --total_batch_size instead) Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
         "--learning_rate",
@@ -272,12 +284,6 @@ def parse_args():
         type=int,
         default=None,
         help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
-    )
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        type=int,
-        default=1,
-        help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
         "--lr_scheduler_type",
@@ -503,7 +509,8 @@ def parse_args():
         type=Optional[Union[List[int], int]],
         default=None,
         help=(
-            "The layer indexes to transform, is this argument is specified, PEFT will transform only the layers indexes that are specified inside this list. If a single integer is passed, PEFT will transform only the layer at this index."
+            "The layer indexes to transform, is this argument is specified, PEFT will transform only the layers indexes "
+            "that are specified inside this list. If a single integer is passed, PEFT will transform only the layer at this index."
         ),
     )
 
@@ -512,7 +519,8 @@ def parse_args():
         type=Optional[str],
         default=None,
         help=(
-            "The layer pattern name, used only if `layers_to_transform` is different to None and if the layer pattern is not in the common layers pattern."
+            "The layer pattern name, used only if `layers_to_transform` is different to None and if the layer pattern "
+            "is not in the common layers pattern."
         ),
     )
 
@@ -551,8 +559,8 @@ def parse_args():
 
     parser.add_argument(
         "--wandb_tags",
-        type=list,
-        default=["trial", "t5-base", "classification"],
+        type=str,
+        default=None,
         help=("tags to be given to individual runs in WandB repository"),
     )
 
@@ -577,6 +585,14 @@ def parse_args():
             extension = args.validation_file.split(".")[-1]
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
 
+    if args.per_device_eval_batch_size is None:
+        args.per_device_eval_batch_size = args.per_device_train_batch_size
+
+    if args.wandb_tags is not None:
+        args.wandb_tags = args.wandb_tags.split(",")
+        if "classification" not in args.wandb_tags:
+            args.wandb_tags.append("classification")
+
     return args
 
 
@@ -595,6 +611,16 @@ def main():
     accelerator = (
         Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
     )
+
+    if args.total_batch_size is not None:
+        if args.gradient_accumulation_steps is not None:
+            logger.warning("`--total_batch_size` overrides --gradient_accumulation_steps")
+        assert args.total_batch_size % accelerator.num_processes == 0, "`--total_batch_size` has to be divisible by the number of processes."
+        args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
+        logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
+    else:
+        args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
+
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -642,10 +668,6 @@ def main():
             num_labels = len(label_list)
 
     # Load pretrained model and tokenizer
-    #
-    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
-
     model, tokenizer, config = get_model(args, num_labels)
 
     # Preprocessing the datasets
@@ -697,18 +719,15 @@ def main():
 
     def preprocess_function(examples):
         # Tokenize the texts
+
         if args.task_name == "copa":
-            texts = (
-                (examples["premise"], examples["choice1"], examples["choice1"], examples["question"])
-            )
+            texts = (examples["premise"], examples["choice1"], examples["choice1"], examples["question"])
         elif args.task_name == "multirc":
-            texts = (
-                (examples["paragraph"], examples["question"], examples["answer"])
-            )
+            texts = (examples["paragraph"], examples["question"], examples["answer"])
         else:
-            texts = (
-                (examples[sentence1_key],) if sentence2_key is None else (examples[sentence1_key], examples[sentence2_key])
-            )
+            texts = (examples[sentence1_key],)
+            if sentence2_key is not None:
+                texts = (examples[sentence1_key], examples[sentence2_key])
 
         result = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
 
@@ -807,12 +826,6 @@ def main():
         accelerator.init_trackers("glue_no_trainer", experiment_config)
 
     # Get the metric function
-    """
-    if args.task_name is not None:
-        metric = evaluate.load("glue", args.task_name)
-    else:
-        metric = evaluate.load("accuracy")
-    """
     metric = evaluate.load("super_glue", args.task_name)
 
     # Train!
