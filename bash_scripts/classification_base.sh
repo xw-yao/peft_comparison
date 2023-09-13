@@ -1,8 +1,8 @@
 #!/bin/bash
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
-experiment_name="t5_large_cb_lora"
+experiment_name="t5_base_cb_lora"
 if [[ -f results/$experiment_name/all_results.json ]]; then
     echo "Experiment $experiment_name is already completed. Continuing to next experiment."
 else
@@ -10,7 +10,7 @@ else
     python scripts/finetuning_classification.py \
         --output_dir "results/$experiment_name"\
         --seed 0 \
-        --model_name_or_path "t5-large" \
+        --model_name_or_path "t5-base" \
         --task_name "cb" \
         --peft_method "lora" \
         --r 8 \
@@ -34,7 +34,7 @@ else
 fi
 
 
-experiment_name="t5_large_copa_lora"
+experiment_name="t5_base_copa_lora"
 if [[ -f results/$experiment_name/all_results.json ]]; then
     echo "Experiment $experiment_name is already completed. Continuing to next experiment."
 else
@@ -42,7 +42,7 @@ else
     python scripts/finetuning_classification.py \
         --output_dir "results/$experiment_name"\
         --seed 0 \
-        --model_name_or_path "t5-large" \
+        --model_name_or_path "t5-base" \
         --task_name "copa" \
         --peft_method "lora" \
         --r 8 \
