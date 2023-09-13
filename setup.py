@@ -59,6 +59,8 @@ setup(
         "wandb>=0.15.9",
         "evaluate",
         "scipy",
+        "scikit-learn",
+        "loguru",
     ],
     extras_require=extras,
     classifiers=[
