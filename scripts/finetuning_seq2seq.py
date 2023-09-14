@@ -41,6 +41,15 @@ from dataclasses import dataclass, field
 import wandb
 
 import transformers
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    SchedulerType,
+    get_scheduler,
+    BitsAndBytesConfig,
+    set_seed,
+    DataCollatorForSeq2Seq,
+)
 from peft import (
     PromptTuningConfig,
     PrefixTuningConfig,
@@ -51,23 +60,12 @@ from peft import (
     PromptTuningConfig,
     TaskType,
 )
-from transformers import (
-    AutoModelForSeq2SeqLM,
-    AutoTokenizer,
-    SchedulerType,
-    get_scheduler,
-    BitsAndBytesConfig,
-    set_seed,
-    DataCollatorForSeq2Seq,
-)
-from transformers.adapters import configuration
+import adapters
 from transformers.utils.versions import require_version
 from loguru import logger
 
 
-
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-#check_min_version("4.34.0.dev0")
 
 logger = get_logger(__name__)
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
@@ -150,7 +148,6 @@ def get_model(args):
 
     # define model
     quantization_config = None
-
     if args.use_quantization:
         quantization_config = BitsAndBytesConfig(
             load_in_4bit=args.load_in_4bit,
@@ -183,18 +180,19 @@ def get_model(args):
         logger.info(f"Pointing PAD token to: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
 
     if args.peft_library == "peft":
+        logger.info("Using PEFT library")
         # patch the model with PEFT config
         peft_config = define_peft_config(args)
         model = get_peft_model(model, peft_config)
-    if args.peft_library == "adapter-transformers":
+    elif args.peft_library == "adapter-transformers":
+        logger.info("Using adapter-transformers library")
         # adapter_config_string could be like "pfeiffer"
         # or "prefix_tuning[bottleneck_size=800]|parallel"
         # learn more: https://docs.adapterhub.ml/overview.html#configuration-strings
-        if not hasattr(model, "add_adapter"):
-            raise ValueError("The model does not support adapter-transformers library")
-
-        model = model.add_adapter("adapter", peft_config=args.adapter_config_string, set_active=True)
+        adapters.init(model)
+        model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
         model.train_adapter("adapter")  # set requires_grad
+        model = model.to(dtype=args.torch_dtype)
     else:
         raise ValueError("peft_library must be either 'peft' or 'adapter-transformers'")
 
@@ -470,7 +468,7 @@ def parse_args():
     # manually adding arguments for quantization and for LoRA module
     parser.add_argument(
         "--use_quantization",
-        type=bool,
+        type=lambda x: x.lower() == "true",
         default=False,
         help=("enable 4 or 8bit quantization."),
     )
@@ -907,6 +905,10 @@ def main():
             "weight_decay": 0.0,
         },
     ]
+    total_parameters = sum(p.numel() for p in model.parameters())
+    trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info(f"Total model parameters: {total_parameters}")
+    logger.info(f"Trainable parameters  : {trainable_parameters}")
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Scheduler and math around the number of training steps.
@@ -1003,7 +1005,7 @@ def main():
     wandb.init(
         project=args.wandb_project,
         config=args,
-        tags=args.tags,
+        tags=args.wandb_tags,
     )
 
     global_steps = 0
