@@ -20,11 +20,9 @@ Fine-tuning a 🤗 Transformers model on summarization.
 
 import argparse
 import json
-import logging
 import math
 import os
 import random
-from pathlib import Path
 import numpy as np
 
 import nltk
@@ -36,7 +34,6 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
-from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 from typing import List, Optional, Union
@@ -47,12 +44,12 @@ import transformers
 from peft import (
     PromptTuningConfig,
     PrefixTuningConfig,
-    LoraConfig, 
+    LoraConfig,
     IA3Config,
     get_peft_model,
-    PromptTuningInit, 
-    PromptTuningConfig, 
-    TaskType, 
+    PromptTuningInit,
+    PromptTuningConfig,
+    TaskType,
 )
 from transformers import (
     AutoModelForSeq2SeqLM,
@@ -63,8 +60,10 @@ from transformers import (
     set_seed,
     DataCollatorForSeq2Seq,
 )
-from transformers.utils import check_min_version, send_example_telemetry
+from transformers.adapters import configuration
 from transformers.utils.versions import require_version
+from loguru import logger
+
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -72,6 +71,8 @@ from transformers.utils.versions import require_version
 
 logger = get_logger(__name__)
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
+datasets.utils.logging.set_verbosity_error()
+transformers.utils.logging.set_verbosity_error()
 
 # You should update this to your particular problem to have better documentation of `model_type`
 
@@ -98,11 +99,10 @@ seq2seq_models = set([
     "t5-11b",
 ])
 
-def define_peft_config(args):    
-
+def define_peft_config(args):
     if args.peft_method in ["lora"]:
         peft_config = LoraConfig(
-            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else "CAUSAL_LM",
+            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else TaskType.CAUSAL_LM,
             r=args.r,
             lora_alpha=args.lora_alpha,
             target_modules=args.target_modules,
@@ -115,29 +115,28 @@ def define_peft_config(args):
 
     elif args.peft_method in ["ia_3"]:
         peft_config = IA3Config(
-            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else "CAUSAL_LM",
+            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else TaskType.CAUSAL_LM,
             target_modules=args.target_modules,
             feedforward_modules=args.feedforward_modules,
             init_ia3_weights=args.init_ia3_weights,
         )
 
     elif args.peft_method in ["prompt_tuning", "p_tuning"]:
-        print(args.num_virtual_tokens)
+        logger.info(args.num_virtual_tokens)
         peft_config = PromptTuningConfig(
-            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else "CAUSAL_LM",
+            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else TaskType.CAUSAL_LM,
             prompt_tuning_init=PromptTuningInit.TEXT if args.prompt_tuning_init=="text" else PromptTuningInit.RANDOM,
             prompt_tuning_init_text=args.prompt_tuning_init_text if args.prompt_tuning_init=="text" else None,
             num_virtual_tokens=args.num_virtual_tokens,
             tokenizer_name_or_path=args.model_name_or_path,
         )
-    
+
     elif args.peft_method in ["prefix_tuning"]:
         peft_config = PrefixTuningConfig(
-            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else "CAUSAL_LM",
+            task_type=TaskType.SEQ_2_SEQ_LM if args.model_name_or_path in seq2seq_models else TaskType.CAUSAL_LM,
             num_virtual_tokens=args.num_virtual_tokens,
             prefix_projection=args.prefix_projection,
         )
-
 
     return peft_config
 
@@ -149,56 +148,60 @@ def get_model(args):
     n_gpus = torch.cuda.device_count()
     max_memory = {i: max_memory for i in range(n_gpus)}
 
-    # how to load the model
-    if args.load_in_4bit:
-        args.load_in_8bit = False
-
     # define model
-    if args.use_quantization: 
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            args.model_name_or_path,
-            quantization_config=BitsAndBytesConfig(
-                load_in_4bit=args.load_in_4bit,
-                load_in_8bit=args.load_in_8bit,
-                llm_int8_threshold=args.llm_int8_threshold,
-                bnb_4bit_compute_dtype=args.torch_dtype,
-                bnb_4bit_use_double_quant=args.bnb_4bit_use_double_quant,
-                bnb_4bit_quant_type=args.bnb_4bit_quant_type,
-            ),
-            torch_dtype=args.torch_dtype,
-            device_map=args.device_map,
+    quantization_config = None
+
+    if args.use_quantization:
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=args.load_in_4bit,
+            load_in_8bit=args.load_in_8bit,
+            llm_int8_threshold=args.llm_int8_threshold,
+            bnb_4bit_compute_dtype=args.torch_dtype,
+            bnb_4bit_use_double_quant=args.bnb_4bit_use_double_quant,
+            bnb_4bit_quant_type=args.bnb_4bit_quant_type,
         )
-    else:
-        model = AutoModelForSeq2SeqLM.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=args.torch_dtype,
-            device_map=args.device_map,
-        )
+
+    model = AutoModelForSeq2SeqLM.from_pretrained(
+        args.model_name_or_path,
+        quantization_config=quantization_config,
+        torch_dtype=args.torch_dtype,
+        device_map=args.device_map,
+    )
 
     # freeze the model
     for param in model.parameters():
         param.requires_grad = False  # freeze the model - train adapters later
-        if param.ndim == 1:
-            # cast the small parameters (e.g. layernorm) to fp32 for stability
-            param.data = param.data.to(args.torch_dtype)
 
     # define tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     if tokenizer.pad_token is not None:
-        print(f"Using present PAD token in the tokenizer: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
+        logger.info(f"Using present PAD token in the tokenizer: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
     else:
         set_pad_to = tokenizer.eos_token
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
         model.config.pad_token_id = model.config.eos_token_id
-        print(f"Pointing PAD token to: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
+        logger.info(f"Pointing PAD token to: {tokenizer.pad_token} (id: {tokenizer.pad_token_id})")
 
-    # patch the model with PEFT config
-    peft_config = define_peft_config(args)
-    model = get_peft_model(model, peft_config)
-    print(model)
+    if args.peft_library == "peft":
+        # patch the model with PEFT config
+        peft_config = define_peft_config(args)
+        model = get_peft_model(model, peft_config)
+    if args.peft_library == "adapter-transformers":
+        # adapter_config_string could be like "pfeiffer"
+        # or "prefix_tuning[bottleneck_size=800]|parallel"
+        # learn more: https://docs.adapterhub.ml/overview.html#configuration-strings
+        if not hasattr(model, "add_adapter"):
+            raise ValueError("The model does not support adapter-transformers library")
+
+        model = model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
+        model.train_adapter("adapter")  # set requires_grad
+    else:
+        raise ValueError("peft_library must be either 'peft' or 'adapter-transformers'")
+
+    logger.info(model)
 
     # Verifying the datatypes.
-    print("\nPrecision details:")
+    logger.info("\nPrecision details:")
     dtypes = {}
     for _, p in model.named_parameters():
         dtype = p.dtype
@@ -209,13 +212,13 @@ def get_model(args):
     for k, v in dtypes.items():
         total += v
     for k, v in dtypes.items():
-        print(k, v, v / total)
+        logger.info(f"{k} {v} {v / total}")
 
     # verying the size of the model
     par_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     par_fixed = sum(p.numel() for p in model.parameters())
     par_percent = int(100 * par_trainable / par_fixed)
-    print(f"\nTotal number of trainable parameters: {par_trainable:,} ({par_percent}%)")
+    logger.info(f"Total number of trainable parameters: {par_trainable:,} ({par_percent}%)")
 
     return model, tokenizer, model.config
 
@@ -406,7 +409,6 @@ def parse_args():
         type=str,
         default=None,
         help="Model type to use if training from scratch.",
-        #choices=MODEL_TYPES,
     )
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
     parser.add_argument(
@@ -451,37 +453,51 @@ def parse_args():
         ),
     )
 
+    parser.add_argument(
+        "--peft_library",
+        default="peft",
+        type=str,
+        choices=["peft", "adapter-transformers"],
+        help="The library to use for PEFT",
+    )
+    parser.add_argument(
+        "--adapter_config_string",
+        default=None,
+        type=str,
+        help="The adapter config string to use for adapter-transformers (ignored if --peft_library is not adapter-transformers)",
+    )
+
     # manually adding arguments for quantization and for LoRA module
     parser.add_argument(
-        "--use_quantization", 
-        type=bool, 
-        default=False, 
+        "--use_quantization",
+        type=bool,
+        default=False,
         help=("enable 4 or 8bit quantization."),
     )
     parser.add_argument(
-        "--device_map", 
-        type=str, 
-        default=None,#"auto"
+        "--device_map",
+        type=str,
+        default=None,
         help=("Which GPU/s to use for hosting the model"),
     )
-    
+
     parser.add_argument(
-        "--load_in_8bit", 
-        type=bool, 
-        default=False, 
+        "--load_in_8bit",
+        type=bool,
+        default=False,
         help=("enable 8bit quantization."),
     )
     parser.add_argument(
         "--llm_int8_threshold",
         type=float,
-        default=6.0, 
+        default=6.0,
         help=("value of the outliner threshold. only relevant when load_in_8bit=True"),
     )
 
     parser.add_argument(
         "--load_in_4bit",
         type=bool,
-        default=True, 
+        default=True,
         help=("enable 4bit quantization."),
     )
 
@@ -489,7 +505,7 @@ def parse_args():
         "--bnb_4bit_quant_type",
         type=str,
         default="fp4",
-        help=("set the quantization data type in the `bnb.nn.Linear4Bit` layers. Options are {'fp4','np4'}."),
+        help="set the quantization data type in the `bnb.nn.Linear4Bit` layers. Options are {'fp4','np4'}.",
     )
 
     parser.add_argument(
@@ -510,7 +526,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--torch_dtype", 
+        "--torch_dtype",
         type=torch.dtype,
         default=torch.bfloat16,
         help=(
@@ -529,26 +545,25 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--keep_in_fp32_modules", 
+        "--keep_in_fp32_modules",
         type=List[str],
         default=None,
         help=("an explicit list of the modules that we don't quantize. We keep them in `torch.float32`."),
     )
 
-
     # lora arguments
     parser.add_argument(
         "--peft_method",
         type=str,
-        default=None, 
+        default=None,
         choices=["lora", "prompt_tuning", "p_tuning", "prefix_tuning", "ia_3", "adapters"],
         help=("Lora attention dimension"),
     )
-    
+
     parser.add_argument(
         "--r",
         type=int,
-        default=8, 
+        default=8,
         help=("Lora attention dimension"),
     )
 
@@ -563,16 +578,16 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--lora_alpha", 
-        type=int, 
-        default=16, 
+        "--lora_alpha",
+        type=int,
+        default=16,
         help=("Lora alpha"),
     )
 
     parser.add_argument(
         "--lora_dropout",
-        type=float, 
-        default=0.0, 
+        type=float,
+        default=0.0,
         help=("Lora dropout"),
     )
 
@@ -584,14 +599,14 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--bias", 
-        type=str, 
-        default="none", 
+        "--bias",
+        type=str,
+        default="none",
         help=("Bias type for Lora. Can be 'none', 'all' or 'lora_only'"),
     )
 
     parser.add_argument(
-        "--modules_to_save", 
+        "--modules_to_save",
         type=Optional[List[str]],
         default=None,
         help=(
@@ -602,7 +617,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--init_lora_weights", 
+        "--init_lora_weights",
         type=bool,
         default=True,
         help=(
@@ -613,7 +628,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--layers_to_transform", 
+        "--layers_to_transform",
         type=Optional[Union[List[int], int]],
         default=None,
         help=(
@@ -622,7 +637,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--layers_pattern", 
+        "--layers_pattern",
         type=Optional[str],
         default=None,
         help=(
@@ -632,43 +647,43 @@ def parse_args():
 
     # promp-tuning, prefix-tuning and p-tuning arguments
     parser.add_argument(
-        "--num_virtual_tokens", 
+        "--num_virtual_tokens",
         type=int,
         default=20,
         help=("how many virtual tokens to add to vocabulary. Embeddings for these tokens will be tuned in the fine-tuning process."),
     )
     parser.add_argument(
-        "--prompt_tuning_init", 
+        "--prompt_tuning_init",
         type=str,
         default="text",
         help=("Initialize virtual tokens from text or randomly"),
     )
     parser.add_argument(
-        "--prompt_tuning_init_text", 
+        "--prompt_tuning_init_text",
         type=str,
         default="text",
         help=("If initialization strategy is \"Text\" then, text given to this argument will be used to initialize the virtual tokens"),
     )
     parser.add_argument(
-        "--prefix_projection", 
+        "--prefix_projection",
         type=bool,
         default=True,
         help=("Use a two-layer MLP to encode the prefix"),
     )
-    
+
 
     # (IA)3 arguments (some arguments are same as LoRA, so not added here)
     parser.add_argument(
-        "--feedforward_modules", 
+        "--feedforward_modules",
         type=Optional[Union[List[str], str]],
         default=None,
         help=(
-            "List of module names or a regex expression of module names which are feedforward" 
+            "List of module names or a regex expression of module names which are feedforward"
             "For example, ['output.dense']"
         ),
     )
     parser.add_argument(
-        "--init_ia3_weights", 
+        "--init_ia3_weights",
         type=bool,
         default=True,
         help=("Whether to initialize the vectors in the (IA)^3 layers."),
@@ -676,14 +691,14 @@ def parse_args():
 
     # wandb arguments
     parser.add_argument(
-        "--wandb_project", 
+        "--wandb_project",
         type=str,
         default="PEFT_comparison",
         help=("name to be given to Weight and Biases logging repository"),
     )
 
     parser.add_argument(
-        "--wandb_tags", 
+        "--wandb_tags",
         type=str,
         default=None,
         help=("tags to be given to individual runs in WandB repository, \
@@ -691,48 +706,41 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--wandb_name", 
+        "--wandb_name",
         type=str,
         default=None,
         help=("display name for the run"),
     )
 
-    
     args = parser.parse_args()
 
     # Sanity checks
-    if args.dataset_name is None and args.train_file is None and args.validation_file is None:
-        raise ValueError("Need either a dataset name or a training/validation file.")
-    else:
-        if args.train_file is not None:
-            extension = args.train_file.split(".")[-1]
-            assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
-        if args.validation_file is not None:
-            extension = args.validation_file.split(".")[-1]
-            assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
-
-    if args.push_to_hub:
-        assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
+    if args.dataset_name is None:
+        raise ValueError("Need dataset name")
 
     if args.target_modules:
         if "," in args.target_modules:
             args.target_modules = args.target_modules.split(",")
         if "*" in args.target_modules and "," in args.target_modules:
             raise NotImplementedError("Combining * and , in target_modules is not supported yet.")
-    
+
     if args.wandb_tags is not None:
         args.wandb_tags = args.wandb_tags.split(",")
         if "seq2seq" not in args.wandb_tags:
             args.wandb_tags.append("seq2seq")
+    
+    if args.peft_library == "adapter-transformers":
+        if args.adapter_config_string is None:
+            raise ValueError("adapter_config_string must be provided when peft_library is adapter-transformers")
+
+    if args.load_in_4bit:
+        args.load_in_8bit = False
 
     return args
 
 
 def main():
     args = parse_args()
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    #send_example_telemetry("run_summarization_no_trainer", args)
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -743,20 +751,19 @@ def main():
         accelerator_log_kwargs["log_with"] = args.report_to
         accelerator_log_kwargs["project_dir"] = args.output_dir
 
-    #accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
     accelerator = Accelerator(**accelerator_log_kwargs)
-    
-    #
+
     if args.total_batch_size is not None:
         if args.gradient_accumulation_steps is not None:
             logger.warning("`--total_batch_size` overrides --gradient_accumulation_steps")
-        assert args.total_batch_size % accelerator.num_processes == 0, "`--total_batch_size` has to be divisible by the number of processes."
-        args.gradient_accumulation_steps = max(1, args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes))
+        if args.total_batch_size % (accelerator.num_processes * args.per_device_train_batch_size) != 0:
+            raise ValueError(f"`--total_batch_size` ({args.total_batch_size}) is not divisible by "
+                             f"num_processes * per_device_train_batch_size ({accelerator.num_processes} * {args.per_device_train_batch_size})")
+        args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
         logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
     else:
         args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
-    
-    #
+
     if args.source_prefix is None and args.model_name_or_path in [
         "t5-small",
         "t5-base",
@@ -768,74 +775,21 @@ def main():
             "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
             "`--source_prefix 'summarize: ' `"
         )
-    # Make one log on every process with the configuration for debugging.
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-        datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO,
-    )
-    logger.info(accelerator.state, main_process_only=False)
-    if accelerator.is_local_main_process:
-        datasets.utils.logging.set_verbosity_warning()
-        transformers.utils.logging.set_verbosity_info()
-    else:
-        datasets.utils.logging.set_verbosity_error()
-        transformers.utils.logging.set_verbosity_error()
 
-    # If passed along, set the training seed now.
     if args.seed is not None:
         set_seed(args.seed)
 
     # Handle the repository creation
-    if accelerator.is_main_process:
-        if args.push_to_hub:
-            # Retrieve of infer repo_name
-            repo_name = args.hub_model_id
-            if repo_name is None:
-                repo_name = Path(args.output_dir).absolute().name
-            # Create repo and retrieve repo_id
-            repo_id = create_repo(repo_name, exist_ok=True, token=args.hub_token).repo_id
-            # Clone repo locally
-            repo = Repository(args.output_dir, clone_from=repo_id, token=args.hub_token)
+    if accelerator.is_main_process and args.output_dir is not None:
+        os.makedirs(args.output_dir, exist_ok=True)
 
-            with open(os.path.join(args.output_dir, ".gitignore"), "w+") as gitignore:
-                if "step_*" not in gitignore:
-                    gitignore.write("step_*\n")
-                if "epoch_*" not in gitignore:
-                    gitignore.write("epoch_*\n")
-        elif args.output_dir is not None:
-            os.makedirs(args.output_dir, exist_ok=True)
     accelerator.wait_for_everyone()
 
-    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub).
-    #
-    # For CSV/JSON files, this script will use the column called 'text' or the first column if no column called
-    # 'text' is found. You can easily tweak this behavior (see below).
-    #
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
-    if args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
-    else:
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = args.train_file.split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
+    raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
 
     # Load pretrained model and tokenizer
-    #
-    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
     model, tokenizer, config = get_model(args)
-    
+
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
@@ -857,17 +811,13 @@ def main():
     else:
         text_column = args.text_column
         if text_column not in column_names:
-            raise ValueError(
-                f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}"
-            )
+            raise ValueError(f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}")
     if args.summary_column is None:
         summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
     else:
         summary_column = args.summary_column
         if summary_column not in column_names:
-            raise ValueError(
-                f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}"
-            )
+            raise ValueError(f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}")
 
     if args.val_max_target_length is None:
         args.val_max_target_length = args.max_target_length
@@ -946,14 +896,14 @@ def main():
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
+    no_decay = ["bias", "LayerNorm", "layer_norm"]
     optimizer_grouped_parameters = [
         {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model.named_parameters() if p.requires_grad and not any(nd in n for nd in no_decay)],
             "weight_decay": args.weight_decay,
         },
         {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "params": [p for n, p in model.named_parameters() if p.requires_grad and any(nd in n for nd in no_decay)],
             "weight_decay": 0.0,
         },
     ]
@@ -969,7 +919,7 @@ def main():
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
-        num_warmup_steps=int(args.max_train_steps * args.lr_scheduler_warmup_percent),#args.num_warmup_steps * args.gradient_accumulation_steps,
+        num_warmup_steps=int(args.max_train_steps * args.lr_scheduler_warmup_percent),
         num_training_steps=args.max_train_steps,
     )
 
@@ -1030,7 +980,7 @@ def main():
             checkpoint_path = path
             path = os.path.basename(checkpoint_path)
 
-        accelerator.print(f"Resumed from checkpoint: {checkpoint_path}")
+        accelerator.logger.info(f"Resumed from checkpoint: {checkpoint_path}")
         accelerator.load_state(path)
         # Extract `epoch_{i}` or `step_{i}`
         training_difference = os.path.splitext(path)[0]
@@ -1053,7 +1003,7 @@ def main():
     wandb.init(
         project=args.wandb_project,
         config=args,
-        #tags=[args.model_name_or_path, args.task_name, args.peft_method],
+        tags=args.tags,
     )
 
     global_steps = 0
@@ -1095,7 +1045,7 @@ def main():
                 },
                 step=completed_steps,
             )
-            
+
             if (step + 1) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
                 model.eval()
                 gen_kwargs = {
@@ -1136,8 +1086,7 @@ def main():
                             predictions=decoded_preds,
                             references=decoded_labels,
                         )
-                    
-                    #
+
                     if (not step == len(train_dataloader) - 1) and (step_eval > 10):
                         break
 
@@ -1164,12 +1113,12 @@ def main():
                     step=completed_steps,
                 )
                 model.train()
-    
+
     # save results
     all_results = {f"eval_{k}": v for k, v in result.items()}
     with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
         json.dump(all_results, f, indent=4)
-    
+
     # save all arguments
     with open(os.path.join(args.output_dir, "all_inputs.json"), "w") as f:
         args_dict = vars(args)

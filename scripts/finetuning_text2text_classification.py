@@ -40,7 +40,7 @@ from peft import (
     PromptTuningConfig,
 )
 from transformers import (
-    AutoModelForSequenceClassification,
+    AutoModelForSeq2SeqLM,
     AutoTokenizer,
     DataCollatorWithPadding,
     PretrainedConfig,
@@ -48,6 +48,7 @@ from transformers import (
     default_data_collator,
     get_scheduler,
     BitsAndBytesConfig,
+    DataCollatorForSeq2Seq,
 )
 from transformers.utils.versions import require_version
 from transformers.adapters import AutoAdapterModel
@@ -76,6 +77,7 @@ task_to_keys = {
     "copa": ("premise", "choice1"),
     "multirc": ("paragraph", "question"),
 }
+
 
 def define_peft_config(args):
     if args.peft_method in ["lora"]:
@@ -125,7 +127,7 @@ def get_model(args, num_labels):
 
     # define model
     if args.use_quantization:
-        model = AutoModelForSequenceClassification.from_pretrained(
+        model = AutoModelForSeq2SeqLM.from_pretrained(
             args.model_name_or_path,
             num_labels=num_labels,
             quantization_config=BitsAndBytesConfig(
@@ -140,7 +142,7 @@ def get_model(args, num_labels):
             device_map=args.device_map,
         )
     else:
-        model = AutoModelForSequenceClassification.from_pretrained(
+        model = AutoModelForSeq2SeqLM.from_pretrained(
             args.model_name_or_path,
             num_labels=num_labels,
             torch_dtype=args.torch_dtype,
@@ -153,17 +155,6 @@ def get_model(args, num_labels):
         if param.ndim == 1:
             # cast the small parameters (e.g. layernorm) to fp32 for stability
             param.data = param.data.to(args.torch_dtype)
-
-    # keeping the model output in float-32 for LM-Head
-    class CastOutputToFloat(nn.Sequential):
-        def forward(self, x):
-            return super().forward(x).to(args.torch_dtype)
-
-    # @TODO: ask Vlad, do we need this for classification?
-    if 't5' in args.model_name_or_path:
-        model.classification_head = CastOutputToFloat(model.classification_head)
-    else:
-        model.score = CastOutputToFloat(model.score)
 
     # define tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
@@ -569,19 +560,11 @@ def parse_args():
         help=("display name for the run"),
     )
 
-    # parse
     args = parser.parse_args()
 
     # Sanity checks
     if args.task_name is None and args.train_file is None and args.validation_file is None:
         raise ValueError("Need either a task name or a training/validation file.")
-    else:
-        if args.train_file is not None:
-            extension = args.train_file.split(".")[-1]
-            assert extension in ["csv", "json"], "`train_file` should be a csv or a json file."
-        if args.validation_file is not None:
-            extension = args.validation_file.split(".")[-1]
-            assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
 
     if args.per_device_eval_batch_size is None:
         args.per_device_eval_batch_size = args.per_device_train_batch_size
@@ -651,6 +634,18 @@ def main():
         # If you decide to use fsdp, this needs to be updated!
     else:
         args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
+
+    if args.source_prefix is None and args.model_name_or_path in [
+        "t5-small",
+        "t5-base",
+        "t5-large",
+        "t5-3b",
+        "t5-11b",
+    ]:
+        logger.warning(
+            "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
+            "`--source_prefix 'summarize: ' `"
+        )
 
     if not accelerator.is_main_process:
         logger.remove()
@@ -758,16 +753,19 @@ def main():
             if sentence2_key is not None:
                 texts = (examples[sentence1_key], examples[sentence2_key])
 
-        result = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
+        model_inputs = tokenizer(*texts, padding=padding, max_length=args.max_length, truncation=True)
+
+        # Decoder inputs
 
         if "label" in examples:
             if label_to_id is not None:
                 # Map labels to IDs (not necessary for GLUE tasks)
-                result["labels"] = [label_to_id[l] for l in examples["label"]]
+                model_inputs["labels"] = [label_to_id[l] for l in examples["label"]]
             else:
                 # In all cases, rename the column to labels because the model will expect that.
-                result["labels"] = examples["label"]
-        return result
+                model_inputs["labels"] = examples["label"]
+
+        return model_inputs
 
     with accelerator.main_process_first():
         processed_datasets = raw_datasets.map(
@@ -802,7 +800,7 @@ def main():
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "LayerNorm.weight"]
+    no_decay = ["bias", "LayerNorm", "layer_norm"]
     optimizer_grouped_parameters = [
         {
             "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
@@ -817,7 +815,7 @@ def main():
 
     # Scheduler and math around the number of training steps
     # NOTE: all of this overcomplicated logic of setting the train steps is needed,
-    # because accelerate supports not just data-parallel, but FSDP and so on
+    # because accelerate supports not just data-parallel, but model-parallel too
     overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if args.max_train_steps is None:
