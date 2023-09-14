@@ -193,7 +193,7 @@ def get_model(args):
         if not hasattr(model, "add_adapter"):
             raise ValueError("The model does not support adapter-transformers library")
 
-        model = model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
+        model = model.add_adapter("adapter", peft_config=args.adapter_config_string, set_active=True)
         model.train_adapter("adapter")  # set requires_grad
     else:
         raise ValueError("peft_library must be either 'peft' or 'adapter-transformers'")

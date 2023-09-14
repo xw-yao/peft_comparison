@@ -61,6 +61,7 @@ setup(
         "scipy",
         "scikit-learn",
         "loguru",
+        "adapter-transformers",
     ],
     extras_require=extras,
     classifiers=[
