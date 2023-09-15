@@ -60,7 +60,6 @@ from peft import (
     PromptTuningConfig,
     TaskType,
 )
-import adapters
 from transformers.utils.versions import require_version
 from loguru import logger
 
@@ -189,7 +188,7 @@ def get_model(args):
         # adapter_config_string could be like "pfeiffer"
         # or "prefix_tuning[bottleneck_size=800]|parallel"
         # learn more: https://docs.adapterhub.ml/overview.html#configuration-strings
-        adapters.init(model)
+        raise NotImplementedError("Adapter-transformers are not currently supported")
         model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
         model.train_adapter("adapter")  # set requires_grad
         model = model.to(dtype=args.torch_dtype)
