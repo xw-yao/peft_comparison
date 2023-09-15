@@ -62,6 +62,7 @@ from peft import (
 )
 from transformers.utils.versions import require_version
 from loguru import logger
+import data_utils
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -779,10 +780,7 @@ def main():
     # Handle the repository creation
     if accelerator.is_main_process and args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
-
     accelerator.wait_for_everyone()
-
-    raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
 
     # Load pretrained model and tokenizer
     model, tokenizer, config = get_model(args)
@@ -795,101 +793,20 @@ def main():
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
-    prefix = args.source_prefix if args.source_prefix is not None else ""
-
-    # Preprocessing the datasets.
-    # First we tokenize all the texts.
-    column_names = raw_datasets["train"].column_names
-
-    # Get the column names for input/target.
-    dataset_columns = summarization_name_mapping.get(args.dataset_name, None)
-    if args.text_column is None:
-        text_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    else:
-        text_column = args.text_column
-        if text_column not in column_names:
-            raise ValueError(f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}")
-    if args.summary_column is None:
-        summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    else:
-        summary_column = args.summary_column
-        if summary_column not in column_names:
-            raise ValueError(f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}")
-
-    if args.val_max_target_length is None:
-        args.val_max_target_length = args.max_target_length
-
-    # Temporarily set max_target_length for training.
-    max_target_length = args.max_target_length
-    padding = "max_length" if args.pad_to_max_length else False
-
-    def preprocess_function(examples):
-        inputs = examples[text_column]
-        targets = examples[summary_column]
-        inputs = [prefix + inp for inp in inputs]
-
-        model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
-
-        # Tokenize targets with the `text_target` keyword argument
-        labels = tokenizer(text_target=targets, max_length=max_target_length, padding=padding, truncation=True)
-
-        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
-        # padding in the loss.
-        if padding == "max_length" and args.ignore_pad_token_for_loss:
-            labels["input_ids"] = [
-                [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
-            ]
-
-        model_inputs["labels"] = labels["input_ids"]
-        return model_inputs
-
-    with accelerator.main_process_first():
-        train_dataset = raw_datasets["train"].map(
-            preprocess_function,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on train dataset",
-        )
-
-        # Temporarily set max_target_length for validation.
-        max_target_length = args.val_max_target_length
-        eval_dataset = raw_datasets["validation"].map(
-            preprocess_function,
-            batched=True,
-            num_proc=args.preprocessing_num_workers,
-            remove_columns=column_names,
-            load_from_cache_file=not args.overwrite_cache,
-            desc="Running tokenizer on val dataset",
-        )
-
-    # Log a few random samples from the training set:
-    for index in random.sample(range(len(train_dataset)), 1):
-        logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-
-    label_pad_token_id = -100 if args.ignore_pad_token_for_loss else tokenizer.pad_token_id
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer,
-        model=model,
-        label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=8 if accelerator.use_fp16 else None,
+    # get preprocessed dataset
+    args, model, tokenizer, accelerator, logger, train_dataloader, eval_dataloader = data_utils.preprocess_data(
+        args=args,
+        mode=model,
+        tokenizer=tokenizer,
+        accelerator=accelerator,
+        logger=logger,
     )
 
-    def postprocess_text(preds, labels):
-        preds = [pred.strip() for pred in preds]
-        labels = [label.strip() for label in labels]
-
-        # rougeLSum expects newline after each sentence
-        preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-        labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
-
-        return preds, labels
-
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
-    )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+    # define postprocess function
+    if args.task_type == "classification":
+        postprocess_text = data_utils.postprocess_classification
+    else:
+        postprocess_text = data_utils.postprocess_summarization
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -949,8 +866,11 @@ def main():
         experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
         #accelerator.init_trackers("summarization_no_trainer", experiment_config)
 
-    # Metric
-    metric = evaluate.load("rouge")
+    # Define metric
+    if args.dataset_name in ["glue", "super_glue"]:
+        metric = evaluate.load(args.dataset_name, args.dataset_config_name)
+    else:
+        metric = evaluate.load("rouge")
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps

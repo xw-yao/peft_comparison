@@ -347,16 +347,6 @@ def preprocess_summarization(
         pad_to_multiple_of=8 if accelerator.use_fp16 else None,
     )
 
-    def postprocess_text(preds, labels):
-        preds = [pred.strip() for pred in preds]
-        labels = [label.strip() for label in labels]
-
-        # rougeLSum expects newline after each sentence
-        preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-        labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
-
-        return preds, labels
-
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
     )
@@ -390,8 +380,6 @@ def preprocess_data(
             logger=logger,
         )
 
-
-    
     
     return args, model, tokenizer, accelerator, logger, train_dataloader, eval_dataloader
 
@@ -530,3 +518,32 @@ def wsc_simple(prediction, example=None, is_target=False):
         referent_words) or referent_words.issubset(prediction_words)
 
   return int(predicted_referent)
+
+def postprocess_summarization(preds, labels, dataset_config_name=None):
+    preds = [pred.strip() for pred in preds]
+    labels = [label.strip() for label in labels]
+
+    # rougeLSum expects newline after each sentence
+    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
+    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
+
+    return preds, labels
+
+def postprocess_classification(preds, labels, dataset_config_name=None):
+
+
+    #
+    pred_ids, label_ids = [], []
+    for idx, pred in enumerate(preds):
+        pred_id = string_label_to_class_id(
+            string_label=pred.lower(), 
+            label_classes=label_names_mapping[dataset_config_name]
+            )
+        label_id = string_label_to_class_id(
+            string_label=labels[idx].lower(), 
+            label_classes=label_names_mapping[dataset_config_name]
+            )
+        pred_ids.append(pred_id)
+        label_ids.append(label_id)
+    
+    return pred_ids, label_ids
