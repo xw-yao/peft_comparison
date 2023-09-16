@@ -17,7 +17,6 @@
 Fine-tuning a 🤗 Transformers model on summarization.
 """
 # You can also adapt this script on your own summarization task. Pointers for this are left as comments.
-
 import argparse
 import json
 import math
@@ -31,7 +30,7 @@ import evaluate
 import torch
 import torch.nn as nn
 from accelerate import Accelerator
-from accelerate.logging import get_logger
+#from accelerate.logging import get_logger
 from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.utils.data import DataLoader
@@ -46,7 +45,6 @@ from transformers import (
     AutoTokenizer,
     SchedulerType,
     get_scheduler,
-    BitsAndBytesConfig,
     set_seed,
     DataCollatorForSeq2Seq,
 )
@@ -66,14 +64,11 @@ import data_utils
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-
-logger = get_logger(__name__)
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/summarization/requirements.txt")
 datasets.utils.logging.set_verbosity_error()
 transformers.utils.logging.set_verbosity_error()
 
 # You should update this to your particular problem to have better documentation of `model_type`
-
 nltk.data.find("tokenizers/punkt")
 
 summarization_name_mapping = {
@@ -160,7 +155,7 @@ def get_model(args):
 
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name_or_path,
-        quantization_config=quantization_config,
+        #quantization_config=quantization_config,
         torch_dtype=args.torch_dtype,
         device_map=args.device_map,
     )
@@ -223,6 +218,12 @@ def get_model(args):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a summarization task")
+    parser.add_argument(
+        "--task_type",
+        type=str,
+        choices=["summarization", "classification"],
+        help="Type of the task associated with the data, e.g. 'summarization' or 'classification'",
+    )
     parser.add_argument(
         "--dataset_name",
         type=str,
@@ -738,17 +739,16 @@ def parse_args():
 
 
 def main():
+    from loguru import logger
     args = parse_args()
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
     accelerator_log_kwargs = {}
-
     if args.with_tracking:
         accelerator_log_kwargs["log_with"] = args.report_to
         accelerator_log_kwargs["project_dir"] = args.output_dir
-
     accelerator = Accelerator(**accelerator_log_kwargs)
 
     if args.total_batch_size is not None:
@@ -796,11 +796,12 @@ def main():
     # get preprocessed dataset
     args, model, tokenizer, accelerator, logger, train_dataloader, eval_dataloader = data_utils.preprocess_data(
         args=args,
-        mode=model,
+        model=model,
         tokenizer=tokenizer,
         accelerator=accelerator,
         logger=logger,
     )
+    logger.info(f"Dataloader object type: {type(train_dataloader)}")
 
     # define postprocess function
     if args.task_type == "classification":
@@ -876,7 +877,6 @@ def main():
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -971,6 +971,7 @@ def main():
                 model.eval()
                 gen_kwargs = {
                     "max_length": args.val_max_target_length,
+                    "min_length": 1,
                     "num_beams": args.num_beams,
                 }
                 for step_eval, batch in enumerate(eval_dataloader):
@@ -1013,9 +1014,7 @@ def main():
 
                 result = metric.compute(use_stemmer=True)
                 result = {k: round(v * 100, 4) for k, v in result.items()}
-
                 logger.info(result)
-
                 if args.with_tracking:
                     result["train_loss"] = total_loss.item() / len(train_dataloader)
                     result["epoch"] = epoch
@@ -1036,7 +1035,7 @@ def main():
                 model.train()
 
     # save results
-    all_results = {f"eval_{k}": v for k, v in result.items()}
+    all_results = {f"eval_{k}": v for k, v in result.items()} if result else {}
     with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
         json.dump(all_results, f, indent=4)
 
