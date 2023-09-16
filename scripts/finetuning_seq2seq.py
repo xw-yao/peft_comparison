@@ -970,7 +970,7 @@ def main():
             if (step + 1) % args.eval_every_steps == 0 or step == len(train_dataloader) - 1:
                 model.eval()
                 gen_kwargs = {
-                    "max_length": args.val_max_target_length,
+                    "max_length": args.val_max_target_length if args.val_max_target_length else args.max_target_length,
                     "min_length": 1,
                     "num_beams": args.num_beams,
                 }
@@ -1002,8 +1002,8 @@ def main():
                             generated_tokens = generated_tokens[0]
                         decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
                         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+                        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels, args.dataset_config_name)
 
-                        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
                         metric.add_batch(
                             predictions=decoded_preds,
                             references=decoded_labels,
