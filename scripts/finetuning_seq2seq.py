@@ -1012,7 +1012,7 @@ def main():
                     if (not step == len(train_dataloader) - 1) and (step_eval > 10):
                         break
 
-                result = metric.compute(use_stemmer=True)
+                result = metric.compute()#use_stemmer=True)
                 result = {k: round(v * 100, 4) for k, v in result.items()}
                 logger.info(result)
                 if args.with_tracking:
