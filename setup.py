@@ -44,6 +44,8 @@ setup(
         "scipy",
         "scikit-learn",
         "loguru",
+        "nltk",
+        "deepspeed",
     ],
     extras_require=extras,
     classifiers=[
