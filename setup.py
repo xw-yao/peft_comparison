@@ -15,45 +15,28 @@
 from setuptools import find_packages, setup
 
 extras = {}
-extras["quality"] = ["black ~= 22.0", "ruff>=0.0.241", "urllib3<=2.0.0"]
-extras["docs_specific"] = ["hf-doc-builder"]
-extras["dev"] = extras["quality"] + extras["docs_specific"]
-extras["test"] = extras["dev"] + ["pytest", "pytest-cov", "pytest-xdist", "parameterized", "datasets", "diffusers"]
 
 setup(
-    name="peft",
-    version="0.6.0.dev0",
-    description="Parameter-Efficient Fine-Tuning (PEFT)",
+    name="peft_comparison",
+    version="0.1.0",
     license_files=["LICENSE"],
     long_description=open("README.md", "r", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
     keywords="deep learning",
     license="Apache",
-    author="The HuggingFace team",
-    author_email="sourab@huggingface.co",
-    url="https://github.com/huggingface/peft",
-    package_dir={"": "src"},
-    packages=find_packages("src"),
-    package_data={"peft": ["py.typed"]},
-    entry_points={},
-    python_requires=">=3.8.0",
+    author="Vijeta Deshpande and Vladislav Lialin",
+    author_email="vlad.lialin@gmail.com",
+    url="https://github.com/guitaricet/peft_comparison",
+    packages=find_packages(),
+    python_requires=">=3.10.0",
     install_requires=[
         "numpy>=1.17",
-        "packaging>=20.0",
-        "psutil",
-        "pyyaml",
-        "torch>=1.13.0",
-        "transformers",
+        "torch",
         "tqdm",
         "accelerate",
-        "safetensors",
-        # need few additional packages
-        "absl-py",
+        "adapter-transformers==3.2.1",
         "bitsandbytes>=0.41.1",
         "datasets",
-        "deepspeed",
-        "peft>=0.5.0",
-        "prompt-toolkit>=3.0.39",
         "sentencepiece>=0.1.99",
         "rouge-score>=0.1.2",
         "wandb>=0.15.9",
@@ -61,36 +44,19 @@ setup(
         "scipy",
         "scikit-learn",
         "loguru",
-        "adapter-transformers",
     ],
     extras_require=extras,
     classifiers=[
-        "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Developers",
         "Intended Audience :: Education",
         "Intended Audience :: Science/Research",
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.10",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
 )
 
-# Release checklist
-# 1. Change the version in __init__.py and setup.py.
-# 2. Commit these changes with the message: "Release: VERSION"
-# 3. Add a tag in git to mark the release: "git tag VERSION -m 'Adds tag VERSION for pypi' "
-#    Push the tag to git: git push --tags origin main
-# 4. Run the following commands in the top-level directory:
-#      python setup.py bdist_wheel
-#      python setup.py sdist
-# 5. Upload the package to the pypi test server first:
-#      twine upload dist/* -r pypitest
-#      twine upload dist/* -r pypitest --repository-url=https://test.pypi.org/legacy/
-# 6. Check that you can install it in a virtualenv by running:
-#      pip install -i https://testpypi.python.org/pypi peft
-# 7. Upload the final version to actual pypi:
-#      twine upload dist/* -r pypi
-# 8. Add release notes to the tag in github once everything is looking hunky-dory.
-# 9. Update the version in __init__.py, setup.py to the new version "-dev" and push to master
+import nltk
+nltk.download("punkt")
