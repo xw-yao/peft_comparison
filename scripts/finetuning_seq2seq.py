@@ -122,15 +122,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
     parser.add_argument("--checkpointing_steps", type=str, default=None, help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="If the training should continue from a checkpoint folder.")
-    parser.add_argument("--with_tracking", action="store_true", help="Whether to enable experiment trackers for logging.")
-    parser.add_argument("--report_to", type=str, default="all", help='The integration to report the results and logs to. Supported platforms are "tensorboard", "wandb", "comet_ml" and "clearml". Use "all" (default) to report to all integrations. Only applicable when --with_tracking is passed.')
 
     # PEFT Configuration
     parser.add_argument("--adapter_config_string", default=None, type=str, help="The adapter config string to use for adapter-transformers, ignored if --peft_library is not adapter-transformers")
 
     # Memory Management
-    parser.add_argument("--device_map", type=str, default=None, help="Which GPU/s to use for hosting the model")
-    parser.add_argument("--load_in_8bit", type=str2bool, default=False, help="Enable 8bit quantization.")
+    parser.add_argument("--load_in_8bit", action="store_true", help="Enable 8bit quantization.")
     parser.add_argument("--torch_dtype", type=torch.dtype, default=torch.bfloat16, help="This sets the dtype of the remaining non quantized layers. 'bitsandbytes' library suggests to set the value to 'torch.float16' for 8 bit model and use the same dtype as the compute dtype for 4 bit model")
 
     # Weight and Biases Configuration
@@ -159,7 +156,7 @@ def get_model(args):
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name_or_path,
         torch_dtype=args.torch_dtype,
-        device_map=args.device_map,
+        device_map={"": torch.cuda.current_device()},
         load_in_8bit=args.load_in_8bit,
     )
 
@@ -173,8 +170,17 @@ def get_model(args):
         model.config.pad_token_id = model.config.eos_token_id
 
     model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
+    model.train()
     model.train_adapter("adapter")
-    model = model.to(dtype=args.torch_dtype)
+
+    if not args.load_in_8bit:
+        model = model.to(dtype=args.torch_dtype)
+
+    if args.load_in_8bit:
+        # adapter is not yet on the device
+        for name, module in model.named_modules():
+            if "adapter" in name:
+                module.to(device=torch.cuda.current_device(), dtype=args.torch_dtype)
 
     if args.verbocity > 1:
         logger.info(model)
@@ -186,11 +192,6 @@ def get_model(args):
     total_parameters = sum(dtype_counts.values())
     dtype_info = [f"{dtype}: {count} ({count / total_parameters * 100:.2f}%)" for dtype, count in dtype_counts.items()]
     logger.info("Model dtypes: ", " | ".join(dtype_info))
-
-    par_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in model.parameters())
-    par_percent = round(100 * par_trainable / total, 4)
-    logger.info(f"Total number of trainable parameters: {par_trainable:,} ({par_percent}%)")
 
     return model, tokenizer
 
@@ -435,7 +436,12 @@ def main():
     total_parameters = sum(p.numel() for p in model.parameters())
     trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total model parameters: {total_parameters:,}")
-    logger.info(f"Trainable parameters  : {trainable_parameters:,}")
+    logger.info(f"Trainable parameters  : {trainable_parameters:,} ({trainable_parameters / total_parameters * 100:.4f}%)")
+    if args.verbocity > 1:
+        logger.info("Trainable model parameters")
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                logger.info(f"{name}: {param.numel():,}")
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
 
     # Scheduler and math around the number of training steps.
@@ -583,7 +589,7 @@ def main():
                     dataloader=eval_dataloader,
                     accelerator=accelerator,
                     max_length=args.val_max_target_length,
-                    num_beams=args.num_beams,
+                    num_beams=1,
                     max_iters=args.max_eval_steps_durig_validation,
                 )
                 logger.info(pformat(result))
