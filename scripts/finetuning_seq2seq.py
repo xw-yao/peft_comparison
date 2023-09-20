@@ -54,6 +54,7 @@ from loguru import logger
 
 import peft_comparison
 import peft_comparison.text2text_utils
+import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -70,8 +71,8 @@ def parse_args():
 
     # Dataset Configuration
     parser.add_argument("--dataset_name", type=str, default="cnn_dailymail", help="The name of the dataset to use via the datasets library.")
-    parser.add_argument("--task_type", default="summarization", choices=["summarization", "classification"])
-    parser.add_argument("--task_name", default=None, help="""
+    parser.add_argument("--task_type", default=None, choices=["summarization", "classification"])
+    parser.add_argument("--dataset_config_name", default=None, help="""
                         The configuration name of the dataset to use via the datasets library
                         E.g., for superglue/glue it would be one of:
                         "cola", "mnli", "mrpc", "qnli", "qqp", "rte", "sst2", "stsb", "wnli", "boolq", "cb", "copa", "multirc"
@@ -143,8 +144,19 @@ def parse_args():
         args.val_max_target_length = args.max_target_length
 
     if args.dataset_name == "cnn_dailymail":
-        args.task_name = "3.0.0"
+        args.dataset_config_name = "3.0.0"
 
+    if args.task_type is None:
+        if args.dataset_name in peft_comparison.mappings.summarization_name_mapping:
+            args.task_type = "summarization"
+        elif args.dataset_config_name in peft_comparison.mappings.task_to_keys:
+            args.task_type = "classification"
+        else:
+            raise ValueError(f"--task_type must be specified for unknown dataset name {args.dataset_name}. "
+                             "But honestly, probably this dataset is not supported anyway. "
+                             "To support dataset you need to at least include it into "
+                             "peft_comparison.mappings.summarization_name_mapping or peft_comparison.mappings.task_to_keys "
+                             "and add a postprocessing function")
     return args
 
 
@@ -164,9 +176,6 @@ def get_model(args):
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
@@ -178,6 +187,9 @@ def get_model(args):
         set_pad_to = tokenizer.eos_token
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
         model.config.pad_token_id = model.config.eos_token_id
+    embedding_size = model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) > embedding_size:
+        model.resize_token_embeddings(len(tokenizer))
 
     model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
     model.train()
@@ -327,7 +339,7 @@ def main():
     ############################################
     # Data preprocessing
 
-    raw_datasets = load_dataset(args.dataset_name, args.task_name)
+    raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
     if args.subsample_data is not None:
         logger.warning(f"Subsampling the dataset to {args.subsample_data} first examples.")
         # remember that it's dataset dict
@@ -338,7 +350,7 @@ def main():
 
     _dataset_name_for_preprocessing = args.dataset_name
     if args.task_type == "classification":
-        _dataset_name_for_preprocessing = args.task_name
+        _dataset_name_for_preprocessing = args.dataset_config_name
 
     raw_datasets, postprocess_fn = peft_comparison.text2text_utils.dataset_to_text2text(
         raw_datasets,
@@ -391,6 +403,10 @@ def main():
             remove_columns=column_names,
             desc="Running tokenizer on train dataset",
         )
+
+    if len(raw_datasets["validation"]) < 1_000:
+        logger.warning(f"Validation dataset is small ({raw_datasets['validation']}), running full validation set during training.")
+        args.max_eval_steps_durig_validation = None
 
     # Log a few random samples from the training set:
     if args.verbocity > 1:
@@ -481,7 +497,7 @@ def main():
     if args.task_type == "summarization":
         metric = evaluate.load("rouge")
     else:
-        metric = evaluate.load("super_glue", args.task_name)
+        metric = evaluate.load("super_glue", args.dataset_config_name)
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -545,6 +561,7 @@ def main():
         active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
 
     for epoch in range(starting_epoch, args.num_train_epochs):
+        logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
 
         for batch in active_dataloader:

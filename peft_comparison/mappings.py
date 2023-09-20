@@ -74,8 +74,8 @@ clf_label_names_mapping = {
         "entailment"
     ],
     "boolq": [
-        "False",
-        "True"
+        "false",
+        "true"
     ],
     "cb": [
         "entailment",
@@ -87,21 +87,21 @@ clf_label_names_mapping = {
         "choice2"
     ],
     "multirc": [
-        "False",
-        "True"
+        "false",
+        "true"
     ],
     "record": None,
     "wic": [
-        "False",
-        "True"
+        "false",
+        "true"
     ],
     "wsc": [
-        "False",
-        "True"
+        "false",
+        "true"
     ],
     "wsc.fixed": [
-        "False",
-        "True"
+        "false",
+        "true"
     ],
     "axb": [
         "entailment",

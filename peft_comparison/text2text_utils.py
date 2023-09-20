@@ -48,8 +48,13 @@ def dataset_to_text2text(dataset, task_type, dataset_name):
         fn_kwargs={"task_name": dataset_name, "label_names": clf_label_names_mapping[dataset_name]}
     )
 
-    assert "source_text" in dataset.features
-    assert "target_text" in dataset.features
+    if isinstance(dataset, dict):
+        for subset in dataset.values():
+            assert "source_text" in subset.column_names, dataset
+            assert "target_text" in subset.column_names, dataset
+    else:
+        assert "source_text" in dataset.column_names
+        assert "target_text" in dataset.column_names
 
     postprocess_fn = partial(postprocess_classification, dataset_config_name=dataset_name)
 
