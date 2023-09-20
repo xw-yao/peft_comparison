@@ -82,7 +82,6 @@ def parse_args():
     parser.add_argument("--max_source_length", type=int, default=1024, help="The maximum total input sequence length after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded.")
     parser.add_argument("--source_prefix", type=str, default="", help="A prefix to add before every source text, useful for T5 models.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=8, help="The number of processes to use for the preprocessing.")
-    parser.add_argument("--overwrite_cache", action="store_true", help="Overwrite the cached training and evaluation sets")
     parser.add_argument("--subsample_data", type=int, default=None, help="If passed, will subsample the dataset to this many examples. (debug only)")
 
     # Target Text Configuration
@@ -97,12 +96,12 @@ def parse_args():
 
     # Batch Configuration
     parser.add_argument("--per_device_train_batch_size", type=int, default=2, help="Batch size per device for the training dataloader.")
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=2, help="Batch size per device for the evaluation dataloader.")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=None, help="Batch size per device for the evaluation dataloader.")
     parser.add_argument("--total_batch_size", type=int, default=32, help="Total batch size per_device_batch_size * num_devices * gradient_accumulation")
 
     # Training Configuration
     parser.add_argument("--gradient_accumulation_steps", type=int, default=None, help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument("--learning_rate", type=float, default=5e-5, help="Initial learning rate after the potential warmup period to use.")
+    parser.add_argument("--learning_rate", type=float, default=2e-4, help="Initial learning rate after the potential warmup period to use.")
     parser.add_argument("--lr_scheduler_warmup_percent", type=float, default=0.06, help="Percentage of steps for the warmup in the lr scheduler.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=1, help="Total number of training epochs to perform.")
@@ -465,6 +464,10 @@ def main():
     model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader
     )
+
+    if args.eval_every_steps is None:
+        args.eval_every_steps = min(2000, args.max_train_steps // 10)
+        logger.info(f"Setting `eval_every_steps` to {args.eval_every_steps}.")
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
