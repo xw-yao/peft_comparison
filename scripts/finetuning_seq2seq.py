@@ -142,6 +142,9 @@ def parse_args():
     if args.val_max_target_length is None:
         args.val_max_target_length = args.max_target_length
 
+    if args.per_device_eval_batch_size is None:
+        args.per_device_eval_batch_size = args.per_device_train_batch_size
+
     if args.dataset_name == "cnn_dailymail":
         args.dataset_config_name = "3.0.0"
 
