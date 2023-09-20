@@ -1,0 +1,18 @@
+python scripts/finetuning_seq2seq.py \
+        --task_type "classification" \
+        --output_dir "results/debug"\
+        --dataset_name "super_glue" \
+        --dataset_config_name "boolq" \
+        --model_name_or_path "t5-large" \
+        --adapter_config_string "lora" \
+        --per_device_train_batch_size 32 \
+        --total_batch_size 32 \
+        --max_source_length 128 \
+        --max_target_length 8 \
+        --num_beams 5 \
+        --learning_rate 2e-4 \
+        --num_train_epochs 3 \
+        --eval_every_steps 100 \
+        --preprocessing_num_workers 1 \
+        --max_eval_steps_durig_validation 2 \
+        --tags debug
