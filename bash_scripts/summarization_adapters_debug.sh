@@ -2,21 +2,18 @@
 # t5-base: 8 (maybe 16?)
 # t5-large: 4
 # t5-3b: 2
+set -e
 
-export model="t5-base"
-for adapter_config_string in \
-    "pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++" \
-    "prefix_tuning" "prefix_tuning_flat" "lora" "ia3" "mam" "unipelt"
-do
-    export experiment_name="${model}_cnn_dailymail_${adapter_config_string}"
-    echo "Starting experiment $experiment_name"
-    python scripts/finetuning_seq2seq.py \
-        --output_dir "results/$experiment_name"\
+export model="t5-3b"
+python -m accelerate.commands.launch --num_processes=2 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
+    scripts/finetuning_seq2seq.py \
+        --output_dir "results/debug"\
         --dataset_name "cnn_dailymail" \
         --dataset_config_name "3.0.0" \
         --preprocessing_num_workers 12 \
         --model_name_or_path $model \
-        --adapter_config_string $adapter_config_string \
+        --load_in_8bit \
+        --adapter_config_string "lora" \
         --per_device_train_batch_size 8 \
         --per_device_eval_batch_size 8 \
         --total_batch_size 32 \
@@ -30,6 +27,4 @@ do
         --subsample_data 1000 \
         --preprocessing_num_workers 1 \
         --max_eval_steps_durig_validation 2 \
-        --tags debug,try_all_methods
-
-done
+        --tags debug
