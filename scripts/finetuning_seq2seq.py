@@ -52,6 +52,8 @@ import wandb
 from tqdm.auto import tqdm, trange
 from loguru import logger
 
+import peft_comparison
+import peft_comparison.text2text_utils
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -62,27 +64,20 @@ nltk.data.find("tokenizers/punkt")
 
 str2bool = lambda x: x.lower() in ["true", "1"]
 
-summarization_name_mapping = {
-    "amazon_reviews_multi": ("review_body", "review_title"),
-    "big_patent": ("description", "abstract"),
-    "cnn_dailymail": ("article", "highlights"),
-    "orange_sum": ("text", "summary"),
-    "pn_summary": ("article", "summary"),
-    "psc": ("extract_text", "summary_text"),
-    "samsum": ("dialogue", "summary"),
-    "thaisum": ("body", "summary"),
-    "xglue": ("news_body", "news_title"),
-    "xsum": ("document", "summary"),
-    "wiki_summary": ("article", "highlights"),
-}
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a summarization task")
 
     # Dataset Configuration
     parser.add_argument("--dataset_name", type=str, default="cnn_dailymail", help="The name of the dataset to use via the datasets library.")
-    parser.add_argument("--dataset_config_name", type=str, default="3.0.0", help="The configuration name of the dataset to use via the datasets library.")
+    parser.add_argument("--task_type", default="summarization", choices=["summarization", "classification"])
+    parser.add_argument("--task_name", default=None, help="""
+                        The configuration name of the dataset to use via the datasets library
+                        E.g., for superglue/glue it would be one of:
+                        "cola", "mnli", "mrpc", "qnli", "qqp", "rte", "sst2", "stsb", "wnli", "boolq", "cb", "copa", "multirc"
+                        And for cnn_dailymail it can be "3.0.0"
+                        Lookup huggingface.co/datasets for more information.
+                        """)
     parser.add_argument("--max_source_length", type=int, default=1024, help="The maximum total input sequence length after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded.")
     parser.add_argument("--source_prefix", type=str, default="", help="A prefix to add before every source text, useful for T5 models.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=8, help="The number of processes to use for the preprocessing.")
@@ -98,8 +93,6 @@ def parse_args():
 
     # Model Configuration
     parser.add_argument("--model_name_or_path", type=str, default="t5-base", help="Path to pretrained model or model identifier from huggingface.co/models.")
-    parser.add_argument("--text_column", type=str, default=None, help="The name of the column in the datasets containing the full texts for summarization.")
-    parser.add_argument("--summary_column", type=str, default=None, help="The name of the column in the datasets containing the summaries for summarization.")
 
     # Batch Configuration
     parser.add_argument("--per_device_train_batch_size", type=int, default=2, help="Batch size per device for the training dataloader.")
@@ -149,16 +142,33 @@ def parse_args():
     if args.val_max_target_length is None:
         args.val_max_target_length = args.max_target_length
 
+    if args.dataset_name == "cnn_dailymail":
+        args.task_name = "3.0.0"
+
     return args
 
 
 def get_model(args):
+    if "t5" in args.model_name_or_path and args.source_prefix is None and args.task_type == "summarization":
+        logger.warning(
+            "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
+            "`--source_prefix 'summarize: ' `"
+        )
+
     model = AutoModelForSeq2SeqLM.from_pretrained(
         args.model_name_or_path,
         torch_dtype=args.torch_dtype,
         device_map={"": torch.cuda.current_device()},
         load_in_8bit=args.load_in_8bit,
     )
+
+    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
+    # on a small vocab and want a smaller embedding size, remove this test.
+    embedding_size = model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) > embedding_size:
+        model.resize_token_embeddings(len(tokenizer))
+    if model.config.decoder_start_token_id is None:
+        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
     for param in model.parameters():
         param.requires_grad = False
@@ -196,17 +206,6 @@ def get_model(args):
     return model, tokenizer
 
 
-def postprocess_text_for_eval(preds, labels):
-    preds = [pred.strip() for pred in preds]
-    labels = [label.strip() for label in labels]
-
-    # rougeLSum expects newline after each sentence
-    preds = ["\n".join(nltk.sent_tokenize(pred)) for pred in preds]
-    labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
-
-    return preds, labels
-
-
 @torch.no_grad()
 def evaluate_model(
     model,
@@ -215,10 +214,17 @@ def evaluate_model(
     tokenizer,
     dataloader,
     accelerator,
+    postprocess_fn,
     max_length=None,
     num_beams=None,
     max_iters=None,
 ):
+    """
+    Args:
+        postprocess_fn: a function that takes a pair of lists of strings (predictions, labels) and returns a pair of
+            lists of strings (predictions, labels) after postprocessing.
+            For an example, look at `peft_comparison.text2text_utils.postprocess_summarization`
+    """
     model.eval()
     pbar = tqdm(
         dataloader,
@@ -263,10 +269,14 @@ def evaluate_model(
                 logger.info(f"Example of predictions: {decoded_preds[0]}")
                 logger.info(f"Example of labels: {labels_str[0]}")
 
-            decoded_preds, labels_str = postprocess_text_for_eval(decoded_preds, labels_str)
+            decoded_preds, labels_str = postprocess_fn(decoded_preds, labels_str)
             metric.add_batch(predictions=decoded_preds, references=labels_str)
 
-    result = metric.compute(use_stemmer=True)
+    if metric.name == "rouge":
+        result = metric.compute(use_stemmer=True)
+    else:
+        result = metric.compute()
+
     result = {f"eval/{k}": round(v * 100, 4) for k, v in result.items()}
 
     model.train()
@@ -311,7 +321,13 @@ def main():
         logger.info(f"{k:30}: {v}")
     logger.info("*" * 40)
 
-    raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
+    # Load pretrained model and tokenizer
+    model, tokenizer = get_model(args)
+
+    ############################################
+    # Data preprocessing
+
+    raw_datasets = load_dataset(args.dataset_name, args.task_name)
     if args.subsample_data is not None:
         logger.warning(f"Subsampling the dataset to {args.subsample_data} first examples.")
         # remember that it's dataset dict
@@ -320,47 +336,25 @@ def main():
             return max(100, args.subsample_data // 10)
         raw_datasets = {k: v.select(range(get_subsample_data(k))) for k, v in raw_datasets.items()}
 
-    # Load pretrained model and tokenizer
-    model, tokenizer = get_model(args)
+    _dataset_name_for_preprocessing = args.dataset_name
+    if args.task_type == "classification":
+        _dataset_name_for_preprocessing = args.task_name
 
-    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
-    # on a small vocab and want a smaller embedding size, remove this test.
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
-    if model.config.decoder_start_token_id is None:
-        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
-
-    if "t5" in args.model_name_or_path and args.source_prefix is None:
-        logger.warning(
-            "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
-            "`--source_prefix 'summarize: ' `"
-        )
+    raw_datasets, postprocess_fn = peft_comparison.text2text_utils.dataset_to_text2text(
+        raw_datasets,
+        task_type=args.task_type,
+        dataset_name=_dataset_name_for_preprocessing,
+    )
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     column_names = raw_datasets["train"].column_names
 
-    # Get the column names for input/target.
-    dataset_columns = summarization_name_mapping.get(args.dataset_name, None)
-    if args.text_column is None:
-        text_column = dataset_columns[0] if dataset_columns is not None else column_names[0]
-    else:
-        text_column = args.text_column
-        if text_column not in column_names:
-            raise ValueError(f"--text_column' value '{args.text_column}' needs to be one of: {', '.join(column_names)}")
-    if args.summary_column is None:
-        summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
-    else:
-        summary_column = args.summary_column
-        if summary_column not in column_names:
-            raise ValueError(f"--summary_column' value '{args.summary_column}' needs to be one of: {', '.join(column_names)}")
-
     padding = "max_length" if args.pad_to_max_length else False
 
     def preprocess_function(examples, is_eval=False):
-        inputs = examples[text_column]
-        targets = examples[summary_column]
+        inputs = examples["source_text"]
+        targets = examples["target_text"]
         inputs = [args.source_prefix + inp for inp in inputs]
 
         model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
@@ -484,7 +478,10 @@ def main():
         wandb.config.update(experiment_config)
 
     # Metric
-    metric = evaluate.load("rouge")
+    if args.task_type == "summarization":
+        metric = evaluate.load("rouge")
+    else:
+        metric = evaluate.load("super_glue", args.task_name)
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -591,6 +588,7 @@ def main():
                     max_length=args.val_max_target_length,
                     num_beams=1,
                     max_iters=args.max_eval_steps_durig_validation,
+                    postprocess_fn=postprocess_fn,
                 )
                 logger.info(pformat(result))
                 accelerator.log(result, step=update_step)
@@ -607,6 +605,7 @@ def main():
             max_length=args.val_max_target_length,
             num_beams=args.num_beams,
             max_iters=None,
+            postprocess_fn=postprocess_fn,
         )
         logger.info(pformat(result))
         accelerator.log(result, step=update_step)
