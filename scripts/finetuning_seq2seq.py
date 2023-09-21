@@ -55,6 +55,7 @@ import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
+from peft_comparison.modeling_llama import LlamaForCausalLM
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 datasets.utils.logging.set_verbosity_error()
@@ -116,7 +117,7 @@ def parse_args():
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="If the training should continue from a checkpoint folder.")
 
     # PEFT Configuration
-    parser.add_argument("--adapter_config_string", default=None, type=str, help="The adapter config string to use for adapter-transformers, ignored if --peft_library is not adapter-transformers")
+    parser.add_argument("--adapter_config_string", default=None, type=str, help="The adapter config string to use for adapter-transformers")
 
     # Memory Management
     parser.add_argument("--load_in_8bit", action="store_true", help="Enable 8bit quantization.")
@@ -168,7 +169,13 @@ def get_model(args):
             "`--source_prefix 'summarize: ' `"
         )
 
-    model = AutoModelForSeq2SeqLM.from_pretrained(
+    model_class = AutoModelForSeq2SeqLM    
+    if "llama" in args.model_name_or_path.lower():
+        raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
+        logger.info("Using LLAMA model (with flash attention)")
+        model_class = LlamaForCausalLM
+
+    model = model_class.from_pretrained(
         args.model_name_or_path,
         torch_dtype=args.torch_dtype,
         device_map={"": torch.cuda.current_device()},
