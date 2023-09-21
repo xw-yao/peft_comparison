@@ -55,7 +55,7 @@ import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
-from peft_comparison.modeling_llama import LlamaForCausalLM
+# from peft_comparison.modeling_llama import LlamaForCausalLM
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 datasets.utils.logging.set_verbosity_error()
