@@ -59,6 +59,3 @@ setup(
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
 )
-
-import nltk
-nltk.download("punkt")

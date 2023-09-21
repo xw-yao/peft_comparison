@@ -22,6 +22,11 @@ do
         continue
     fi
 
+    lr=2e-4
+    if adapter_config_string == "ai3"; then
+        lr=1e-3
+    fi
+
     echo "Starting experiment $experiment_name"
     # python -m accelerate.commands.launch --num_processes=2 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
     python scripts/finetuning_seq2seq.py \
@@ -35,7 +40,7 @@ do
             --max_source_length 512 \
             --max_target_length 8 \
             --num_beams 5 \
-            --learning_rate 2e-4 \
+            --learning_rate $lr \
             --num_train_epochs 3 \
 
 done

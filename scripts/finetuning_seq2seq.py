@@ -26,7 +26,6 @@ import os
 import random
 from pprint import pformat
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -253,38 +252,37 @@ def evaluate_model(
             logger.info(f"{max_iters} evaluation steps reached. Stopping evaluation.")
             break
 
-        with torch.no_grad():
-            unwrapped_model = accelerator.unwrap_model(model)
-            generated_tokens = unwrapped_model.generate(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                max_length=max_length,
-                num_beams=num_beams,
-            )
+        unwrapped_model = accelerator.unwrap_model(model)
+        generated_tokens = unwrapped_model.generate(
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
+            max_length=max_length,
+            num_beams=num_beams,
+        )
 
-            generated_tokens = accelerator.pad_across_processes(
-                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
-            )
-            labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
+        generated_tokens = accelerator.pad_across_processes(
+            generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+        )
+        labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
 
-            generated_tokens = generated_tokens.cpu().numpy()
-            labels = labels.cpu().numpy()
+        generated_tokens = generated_tokens.cpu().numpy()
+        labels = labels.cpu().numpy()
 
-            if isinstance(generated_tokens, tuple):
-                generated_tokens = generated_tokens[0]
+        if isinstance(generated_tokens, tuple):
+            generated_tokens = generated_tokens[0]
 
-            decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-            labels_str = [_l["targets"] for _l in batch["metadata"]]
-            if len(decoded_preds) != len(labels_str):
-                print(f"Input ids shape: {batch['input_ids'].shape}"),
-                print(f"{len(decoded_preds)} != {len(labels_str)}")
+        decoded_preds = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+        labels_str = [_l["targets"] for _l in batch["metadata"]]
+        if len(decoded_preds) != len(labels_str):
+            print(f"Input ids shape: {batch['input_ids'].shape}"),
+            print(f"{len(decoded_preds)} != {len(labels_str)}")
 
-            if eval_step == 0:
-                logger.info(f"Example of predictions: {decoded_preds[0]}")
-                logger.info(f"Example of labels: {labels_str[0]}")
+        if eval_step == 0:
+            logger.info(f"Example of predictions: {decoded_preds[0]}")
+            logger.info(f"Example of labels: {labels_str[0]}")
 
-            decoded_preds, labels_str = postprocess_fn(decoded_preds, labels_str)
-            metric.add_batch(predictions=decoded_preds, references=labels_str)
+        decoded_preds, labels_str = postprocess_fn(decoded_preds, labels_str)
+        metric.add_batch(predictions=decoded_preds, references=labels_str)
 
     if metric.name == "rouge":
         result = metric.compute(use_stemmer=True)
