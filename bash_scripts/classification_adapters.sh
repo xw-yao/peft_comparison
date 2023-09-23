@@ -4,18 +4,18 @@
 # t5-3b: 1 (with quantization)
 set -e
 
-export model="t5-base"
+export model="t5-11b"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++" \
-    "prefix_tuning" "prefix_tuning_flat" "lora" "ia3" "mam" "unipelt"
+    "pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++"
+    #"prefix_tuning" "prefix_tuning_flat" "lora" "ia3" "mam" "unipelt"
 do
 
 for dataset_config_name in \
     "boolq" "cb" "copa" "rte"
 do
 
-    export experiment_name="${model}_${dataset_name}_${adapter_config_string}"
+    export experiment_name="${model}_${dataset_name}_${dataset_config_name}_${adapter_config_string}"
 
     if [[ -f results/$experiment_name/all_results.json ]]; then
         echo "Experiment $experiment_name is already completed. Continuing to next experiment."
@@ -35,7 +35,7 @@ do
             --dataset_config_name $dataset_config_name \
             --model_name_or_path $model \
             --adapter_config_string $adapter_config_string \
-            --per_device_train_batch_size 32 \
+            --per_device_train_batch_size 2 \
             --total_batch_size 32 \
             --max_source_length 512 \
             --max_target_length 8 \
