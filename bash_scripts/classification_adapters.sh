@@ -4,11 +4,11 @@
 # t5-3b: 1 (with quantization)
 set -e
 
-export model="t5-11b"
+export model="meta-llama/Llama-2-7b-hf"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++"
-    #"prefix_tuning" "prefix_tuning_flat" "lora" "ia3" "mam" "unipelt"
+    "pfeiffer" 
+    #"prefix_tuning" "prefix_tuning_flat" "mam" "houlsby" "scaled_parallel" "compacter" "compacter++" "lora" "ia3" "unipelt"
 do
 
 for dataset_config_name in \
@@ -35,13 +35,15 @@ do
             --dataset_config_name $dataset_config_name \
             --model_name_or_path $model \
             --adapter_config_string $adapter_config_string \
-            --per_device_train_batch_size 2 \
+            --per_device_train_batch_size 1 \
             --total_batch_size 32 \
             --max_source_length 512 \
             --max_target_length 8 \
             --num_beams 5 \
             --learning_rate $lr \
             --num_train_epochs 3 \
+            --load_in_8bit \
+            --wandb_project "PEFT_comparison" \
 
 done
 done

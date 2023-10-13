@@ -748,7 +748,6 @@ def main():
 
     def preprocess_function(examples):
         # Tokenize the texts
-
         if args.task_name == "copa":
             texts = (examples["premise"], examples["choice1"], examples["choice1"], examples["question"])
         elif args.task_name == "multirc":

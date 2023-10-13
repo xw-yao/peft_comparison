@@ -35,6 +35,7 @@ import datasets
 import evaluate
 
 import transformers
+from transformers.adapters.configuration import PrefixTuningConfig
 from transformers import (
     AutoModelForSeq2SeqLM,
     AutoTokenizer,
@@ -55,7 +56,8 @@ import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
-# from peft_comparison.modeling_llama import LlamaForCausalLM
+from peft_comparison.modeling_llama import LlamaForCausalLM
+from peft_comparison.tokenization_llama_fast import LlamaTokenizer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 datasets.utils.logging.set_verbosity_error()
@@ -159,6 +161,9 @@ def parse_args():
                              "To support dataset you need to at least include it into "
                              "peft_comparison.mappings.summarization_name_mapping or peft_comparison.mappings.task_to_keys "
                              "and add a postprocessing function")
+    
+    args.decoder_only = False if "t5" in args.model_name_or_path else True
+
     return args
 
 
@@ -171,26 +176,26 @@ def get_model(args):
 
     model_class = AutoModelForSeq2SeqLM    
     if "llama" in args.model_name_or_path.lower():
-        raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
-        logger.info("Using LLAMA model (with flash attention)")
+        #raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
+        logger.info("Using LLAMA model (without flash attention)")
         model_class = LlamaForCausalLM
-
     model = model_class.from_pretrained(
         args.model_name_or_path,
         torch_dtype=args.torch_dtype,
         device_map={"": torch.cuda.current_device()},
         load_in_8bit=args.load_in_8bit,
     )
+    tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path) if "llama" in args.model_name_or_path.lower() else AutoTokenizer.from_pretrained(args.model_name_or_path)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     if model.config.decoder_start_token_id is None:
-        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+        model.config.decoder_start_token_id = tokenizer.bos_token_id
+        #raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
     for param in model.parameters():
         param.requires_grad = False
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
     if tokenizer.pad_token is None:
         set_pad_to = tokenizer.eos_token
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
@@ -199,6 +204,7 @@ def get_model(args):
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
 
+    #
     model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
     model.train()
     model.train_adapter("adapter")
@@ -238,6 +244,7 @@ def evaluate_model(
     max_length=None,
     num_beams=None,
     max_iters=None,
+    decoder_only=False,
 ):
     """
     Args:
@@ -267,6 +274,18 @@ def evaluate_model(
             num_beams=num_beams,
         )
 
+        #
+        import ipdb
+        ipdb.set_trace()
+        if decoder_only:
+            generated_tokens = peft_comparison.text2text_utils.strip_input_tokens_from_generation(
+                input_ids=batch["input_ids"], 
+                generated_tokens=generated_tokens, 
+                labels=batch["labels"], 
+                pad_token_id=tokenizer.pad_token_id
+            )
+
+        ipdb.set_trace()
         generated_tokens = accelerator.pad_across_processes(
             generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
         )

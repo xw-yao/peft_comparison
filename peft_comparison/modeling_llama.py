@@ -30,7 +30,7 @@ from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import add_start_docstrings, add_start_docstrings_to_model_forward, logging, replace_return_docstrings
-from transformers.models.llama.configuration_llama import LlamaConfig
+from peft_comparison.configuration_llama import LlamaConfig
 
 # TODO: support adapters
 

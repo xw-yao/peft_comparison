@@ -1,6 +1,7 @@
 import re
 import nltk
 from functools import partial
+import torch
 
 from peft_comparison.mappings import (
     summarization_name_mapping,
@@ -11,7 +12,7 @@ from peft_comparison.mappings import (
 
 # Preprocessing functions
 
-def dataset_to_text2text(dataset, task_type, dataset_name):
+def dataset_to_text2text(dataset, task_type, dataset_name, decoder_only=False):
     """Takes a dataset dict and returns a dataset with fields source_text target_text and a postprocessing function
     
     If task_type is summarization, just renames the columns
@@ -29,9 +30,12 @@ def dataset_to_text2text(dataset, task_type, dataset_name):
             NOT "superglue" or "glue"
     """
     if task_type == "summarization":
-        source_text_column, target_text_column = summarization_name_mapping[dataset_name]
-        dataset = dataset.rename_column(source_text_column, "source_text")
-        dataset = dataset.rename_column(target_text_column, "target_text")
+        if not decoder_only:
+            source_text_column, target_text_column = summarization_name_mapping[dataset_name]
+            dataset = dataset.rename_column(source_text_column, "source_text")
+            dataset = dataset.rename_column(target_text_column, "target_text")
+        else:
+            NotImplementedError("Summarization tasks: data preprocessing for decoder-only models is not implemented yet.")
         return dataset, postprocess_summarization
 
     if task_type != "classification":
@@ -45,7 +49,7 @@ def dataset_to_text2text(dataset, task_type, dataset_name):
     dataset = dataset.map(
         preprocess_glue_one_example,
         batched=False,
-        fn_kwargs={"task_name": dataset_name, "label_names": clf_label_names_mapping[dataset_name]}
+        fn_kwargs={"task_name": dataset_name, "label_names": clf_label_names_mapping[dataset_name], "decoder_only": decoder_only}
     )
 
     if isinstance(dataset, dict):
@@ -55,13 +59,14 @@ def dataset_to_text2text(dataset, task_type, dataset_name):
     else:
         assert "source_text" in dataset.column_names
         assert "target_text" in dataset.column_names
-
+    
     postprocess_fn = partial(postprocess_classification, dataset_config_name=dataset_name)
 
     return dataset, postprocess_fn
 
 
-def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, id_key="idx"):
+
+def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, id_key="idx", decoder_only=False):
     """
 
     CODE SOURCE: https://github.com/google-research/text-to-text-transfer-transformer/blob/24d9d3b89b129e586bbfe35cffbc5926d88adc5e/t5/data/preprocessors.py#L734C1-L812C12
@@ -136,11 +141,17 @@ def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, i
     ex["source_text"] = input_text.strip()
     ex["target_text"] = label_name
 
+    # @NOTE: we should be careful in not passing the "target_text" as labels to the decoder-only model. 
+    if decoder_only:
+        source_text = ex.pop("source_text")
+        target_text = ex.pop("target_text")
+        ex["source_text"] = source_text + " " + target_text
+        ex["target_text"] = target_text
+
     return ex
 
 
 # Postprocessing functions
-
 def postprocess_summarization(preds, labels, dataset_config_name=None):
     preds = [pred.strip() for pred in preds]
     labels = [label.strip() for label in labels]
@@ -150,7 +161,6 @@ def postprocess_summarization(preds, labels, dataset_config_name=None):
     labels = ["\n".join(nltk.sent_tokenize(label)) for label in labels]
 
     return preds, labels
-
 
 def postprocess_classification(preds, labels, dataset_config_name=None):
     pred_ids, label_ids = [], []
@@ -168,6 +178,15 @@ def postprocess_classification(preds, labels, dataset_config_name=None):
 
     return pred_ids, label_ids
 
+def strip_input_tokens_from_generation(input_ids, generated_tokens, labels, pad_token_id):
+    generated_tokens_cleaned = pad_token_id * torch.ones(generated_tokens.shape, dtype=generated_tokens.dtype, device=generated_tokens.device)
+    bsz, seq_len = generated_tokens.shape
+    for example in range(bsz):
+        len_input = sum(input_ids[example, :] != pad_token_id) - sum(labels[example, :] != pad_token_id)
+        generated_tokens_wo_input = generated_tokens[example, len_input:]
+        generated_tokens_cleaned[example, :len(generated_tokens_wo_input)] = generated_tokens_wo_input
+
+    return generated_tokens_cleaned
 
 def string_label_to_class_id(string_label, label_classes, default=-1):
     """Returns index of string_label in label_classes or default if not found."""
