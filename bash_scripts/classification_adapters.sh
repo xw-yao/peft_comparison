@@ -4,11 +4,11 @@
 # t5-3b: 1 (with quantization)
 set -e
 
-export model="meta-llama/Llama-2-7b-hf"
+export model="t5-3b"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "pfeiffer" 
-    #"prefix_tuning" "prefix_tuning_flat" "mam" "houlsby" "scaled_parallel" "compacter" "compacter++" "lora" "ia3" "unipelt"
+    "prefix_tuning" "prefix_tuning_flat" "mam" 
+    #"pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++" "lora" "ia3" "unipelt"
 do
 
 for dataset_config_name in \
