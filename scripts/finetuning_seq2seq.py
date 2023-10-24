@@ -192,10 +192,26 @@ def get_model(args):
     if model.config.decoder_start_token_id is None:
         model.config.decoder_start_token_id = tokenizer.bos_token_id
         #raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+    
+    # add peft modules
+    if not args.adapter_config_string == "bitfit":
+        
+        # freeze all parameters
+        for param in model.parameters():
+            param.requires_grad = False
 
-    for param in model.parameters():
-        param.requires_grad = False
+        # add PEFT
+        model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
+        model.train()
+        model.train_adapter("adapter")
+    
+    else:
+        # freeze all parameters
+        for name, param in model.named_parameters():
+            if not "bias" in name:
+                param.requires_grad = False
 
+    #
     if tokenizer.pad_token is None:
         set_pad_to = tokenizer.eos_token
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
@@ -203,11 +219,6 @@ def get_model(args):
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
-
-    #
-    model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
-    model.train()
-    model.train_adapter("adapter")
 
     if not args.load_in_8bit:
         model = model.to(dtype=args.torch_dtype)
