@@ -42,6 +42,7 @@ from transformers import (
     SchedulerType,
     get_scheduler,
     set_seed,
+    BitsAndBytesConfig,
 )
 
 from accelerate import Accelerator
@@ -179,22 +180,18 @@ def get_model(args):
         #raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
         logger.info("Using LLAMA model (without flash attention)")
         model_class = LlamaForCausalLM
-    model = model_class.from_pretrained(
-        args.model_name_or_path,
-        torch_dtype=args.torch_dtype,
-        device_map={"": torch.cuda.current_device()},
-        load_in_8bit=args.load_in_8bit,
-    )
     tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path) if "llama" in args.model_name_or_path.lower() else AutoTokenizer.from_pretrained(args.model_name_or_path)
-
-    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
-    # on a small vocab and want a smaller embedding size, remove this test.
-    if model.config.decoder_start_token_id is None:
-        model.config.decoder_start_token_id = tokenizer.bos_token_id
-        #raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
     
     # add peft modules
-    if not args.adapter_config_string == "bitfit":
+    if not args.adapter_config_string in ["bitfit", "ln_tuning"]:
+        
+        # load model
+        model = model_class.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=args.torch_dtype,
+            device_map={"": torch.cuda.current_device()},
+            load_in_8bit=args.load_in_8bit,
+        )
         
         # freeze all parameters
         for param in model.parameters():
@@ -205,13 +202,66 @@ def get_model(args):
         model.train()
         model.train_adapter("adapter")
     
-    else:
-        # freeze all parameters
+    elif args.adapter_config_string == "bitfit":
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=args.load_in_8bit,
+            llm_int8_skip_modules=["bias"],
+        )
+        model = model_class.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=args.torch_dtype,
+            device_map={"": torch.cuda.current_device()},
+            quantization_config=quant_config,
+        )
+
+        # freeze all but bias parameters
         for name, param in model.named_parameters():
             if not "bias" in name:
                 param.requires_grad = False
+    
+    elif args.adapter_config_string == "ln_tuning":
+        quant_config = BitsAndBytesConfig(
+            load_in_8bit=args.load_in_8bit,
+            #llm_int8_skip_modules=["layer_norm"] if "t5" in args.model_name_or_path else ["input_layernorm", "post_attention_layernorm"],
+        )
+        print(type(quant_config.llm_int8_skip_modules))
+        print(quant_config.llm_int8_skip_modules)
+        model = model_class.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=args.torch_dtype,
+            device_map={"": torch.cuda.current_device()},
+            quantization_config=quant_config,
+        )
 
-    #
+        class CastOutputToFloat(nn.Sequential):
+            def forward(self, x):
+                return super().forward(x).to(args.torch_dtype)
+
+        # freeze all but LN parameters
+        for name, param in model.named_parameters():
+            # LlaMa layer norm key: input_layernorm, post_attention_layernorm
+            # T5 layer norm key:    layer_norm
+            if not (("_layernorm" in name) or ("layer_norm" in name)):
+                param.requires_grad = False
+            else:
+                model.name = CastOutputToFloat(model.name)
+                print(f"{name}, requires grad: {param.requires_grad}")
+    
+    # send to device if not quantized
+    if not args.load_in_8bit:
+        model = model.to(dtype=args.torch_dtype)
+    
+    # adapter is not yet on the device
+    if args.load_in_8bit:
+        for name, module in model.named_modules():
+            if "adapter" in name:
+                module.to(device=torch.cuda.current_device(), dtype=args.torch_dtype)
+
+    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
+    # on a small vocab and want a smaller embedding size, remove this test.
+    if model.config.decoder_start_token_id is None:
+        model.config.decoder_start_token_id = tokenizer.bos_token_id
+        #raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
     if tokenizer.pad_token is None:
         set_pad_to = tokenizer.eos_token
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
@@ -219,15 +269,6 @@ def get_model(args):
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
-
-    if not args.load_in_8bit:
-        model = model.to(dtype=args.torch_dtype)
-
-    if args.load_in_8bit:
-        # adapter is not yet on the device
-        for name, module in model.named_modules():
-            if "adapter" in name:
-                module.to(device=torch.cuda.current_device(), dtype=args.torch_dtype)
 
     if args.verbocity > 1:
         logger.info(model)

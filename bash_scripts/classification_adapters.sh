@@ -7,8 +7,8 @@ set -e
 export model="t5-3b"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "prefix_tuning" "prefix_tuning_flat" "mam" 
-    #"pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++" "lora" "ia3" "unipelt"
+    "ln_tuning"
+    #"pfeiffer" "houlsby" "scaled_parallel" "compacter" "compacter++" "lora" "ia3" "unipelt" "prefix_tuning" "prefix_tuning_flat" "mam" 
 do
 
 for dataset_config_name in \
@@ -43,7 +43,7 @@ do
             --learning_rate $lr \
             --num_train_epochs 3 \
             --load_in_8bit \
-            --wandb_project "PEFT_comparison" \
+            --wandb_project "PEFT_comparison_v2" \
 
 done
 done
