@@ -35,14 +35,13 @@ import datasets
 import evaluate
 
 import transformers
-from transformers.adapters.configuration import PrefixTuningConfig
 from transformers import (
     AutoModelForSeq2SeqLM,
+    AutoModelForCausalLM,
     AutoTokenizer,
     SchedulerType,
     get_scheduler,
     set_seed,
-    #BitsAndBytesConfig,
 )
 
 from accelerate import Accelerator
@@ -53,11 +52,11 @@ import wandb
 from tqdm.auto import tqdm, trange
 from loguru import logger
 
+from adapters.models.llama.adapter_model import LlamaAdapterModel
 import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
-from peft_comparison.modeling_llama import LlamaForCausalLM
 from peft_comparison.tokenization_llama_fast import LlamaTokenizer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -124,6 +123,7 @@ def parse_args():
 
     # Memory Management
     parser.add_argument("--load_in_8bit", action="store_true", help="Enable 8bit quantization.")
+    parser.add_argument("--load_in_4bit", action="store_true", help="Enable 4bit quantization.")
     parser.add_argument("--torch_dtype", type=torch.dtype, default=torch.bfloat16, help="This sets the dtype of the remaining non quantized layers. 'bitsandbytes' library suggests to set the value to 'torch.float16' for 8 bit model and use the same dtype as the compute dtype for 4 bit model")
 
     # Weight and Biases Configuration
@@ -167,6 +167,32 @@ def parse_args():
 
     return args
 
+def load_llama_with_adapters_and_lm_head(
+        model_class,
+        model_name_or_path,
+        load_in_4bit,
+):
+    """
+    This function requires Adapters branch of the Adapter-hub library:
+    https://github.com/adapter-hub/adapter-transformers/tree/adapters
+    
+    """
+
+    # @NOTE: we are using torch.float32 to overcome the compatibility issues with the new Adapters library
+    
+    # first we load the reference model from huggingface
+    model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
+    lm_head_parameters = model_ref.lm_head.weight
+    del model_ref
+    torch.cuda.empty_cache()
+
+    # load the Adapters version of the Llama model
+    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
+    model.add_causal_lm_head("lm_head")
+    model.heads.lm_head[0].weight = lm_head_parameters
+
+    return model
+
 
 def get_model(args):
     if "t5" in args.model_name_or_path and args.source_prefix is None and args.task_type == "summarization":
@@ -183,19 +209,27 @@ def get_model(args):
     if "llama" in args.model_name_or_path.lower():
         #raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
         logger.info("Using LLAMA model")
-        model_class = LlamaForCausalLM
+        model_class = LlamaAdapterModel
 
     # add peft modules
     if not args.adapter_config_string in ["bitfit", "ln_tuning"]:
         
         # load model
-        model = model_class.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=args.torch_dtype,
-            device_map={"": torch.cuda.current_device()},
-            load_in_8bit=args.load_in_8bit,
-        )
-        
+        if "t5" in args.model_name_or_path:
+            model = model_class.from_pretrained(
+                args.model_name_or_path,
+                torch_dtype=args.torch_dtype,
+                device_map={"": torch.cuda.current_device()},
+                load_in_8bit=args.load_in_8bit,
+            )
+
+        else:
+            model = load_llama_with_adapters_and_lm_head(
+                model_class=model_class,
+                model_name_or_path=args.model_name_or_path,
+                load_in_4bit=args.load_in_4bit,
+            )
+
         # freeze all parameters
         for param in model.parameters():
             param.requires_grad = False
@@ -204,17 +238,15 @@ def get_model(args):
         model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
         model.train()
         model.train_adapter("adapter")
+        for name, module in model.named_modules():
+            if "adapter" in name:
+                module.to(torch.cuda.current_device())
     
     elif args.adapter_config_string == "bitfit":
-        quant_config = BitsAndBytesConfig(
-            load_in_8bit=args.load_in_8bit,
-            llm_int8_skip_modules=["bias"],
-        )
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
             device_map={"": torch.cuda.current_device()},
-            quantization_config=quant_config,
         )
 
         # freeze all but bias parameters
@@ -226,8 +258,7 @@ def get_model(args):
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map="auto",#{"": torch.cuda.current_device()},
-            #quantization_config=quant_config,
+            device_map={"": torch.cuda.current_device()},
         )
                 
         # freeze all but LN parameters
@@ -238,7 +269,7 @@ def get_model(args):
                 param.requires_grad = False
     
     # send to device if not quantized
-    if not args.load_in_8bit:
+    if (not args.load_in_8bit) and (not args.load_in_4bit):
         model = model.to(dtype=args.torch_dtype)
     
     # adapter is not yet on the device
@@ -634,6 +665,8 @@ def main():
         model.train()
 
         for batch in active_dataloader:
+            print(batch["input_ids"].shape)
+            print(batch["labels"].shape)
             global_step += 1
 
             outputs = model(**batch)
