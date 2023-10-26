@@ -34,7 +34,7 @@ setup(
         "torch",
         "tqdm",
         "accelerate",
-        #"adapter-transformers==3.2.1",
+        "adapter-transformers==3.2.1",
         "bitsandbytes>=0.41.1",
         "datasets",
         "sentencepiece>=0.1.99",
