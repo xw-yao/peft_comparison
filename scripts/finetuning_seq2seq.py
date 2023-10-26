@@ -42,7 +42,7 @@ from transformers import (
     SchedulerType,
     get_scheduler,
     set_seed,
-    BitsAndBytesConfig,
+    #BitsAndBytesConfig,
 )
 
 from accelerate import Accelerator
@@ -174,14 +174,17 @@ def get_model(args):
             "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
             "`--source_prefix 'summarize: ' `"
         )
+    
+    # tokenizer
+    tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path) if "llama" in args.model_name_or_path.lower() else AutoTokenizer.from_pretrained(args.model_name_or_path)
 
+    # model 
     model_class = AutoModelForSeq2SeqLM    
     if "llama" in args.model_name_or_path.lower():
         #raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
-        logger.info("Using LLAMA model (without flash attention)")
+        logger.info("Using LLAMA model")
         model_class = LlamaForCausalLM
-    tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path) if "llama" in args.model_name_or_path.lower() else AutoTokenizer.from_pretrained(args.model_name_or_path)
-    
+
     # add peft modules
     if not args.adapter_config_string in ["bitfit", "ln_tuning"]:
         
@@ -220,32 +223,19 @@ def get_model(args):
                 param.requires_grad = False
     
     elif args.adapter_config_string == "ln_tuning":
-        quant_config = BitsAndBytesConfig(
-            load_in_8bit=args.load_in_8bit,
-            #llm_int8_skip_modules=["layer_norm"] if "t5" in args.model_name_or_path else ["input_layernorm", "post_attention_layernorm"],
-        )
-        print(type(quant_config.llm_int8_skip_modules))
-        print(quant_config.llm_int8_skip_modules)
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": torch.cuda.current_device()},
-            quantization_config=quant_config,
+            device_map="auto",#{"": torch.cuda.current_device()},
+            #quantization_config=quant_config,
         )
-
-        class CastOutputToFloat(nn.Sequential):
-            def forward(self, x):
-                return super().forward(x).to(args.torch_dtype)
-
+                
         # freeze all but LN parameters
         for name, param in model.named_parameters():
             # LlaMa layer norm key: input_layernorm, post_attention_layernorm
             # T5 layer norm key:    layer_norm
             if not (("_layernorm" in name) or ("layer_norm" in name)):
                 param.requires_grad = False
-            else:
-                model.name = CastOutputToFloat(model.name)
-                print(f"{name}, requires grad: {param.requires_grad}")
     
     # send to device if not quantized
     if not args.load_in_8bit:
@@ -327,8 +317,6 @@ def evaluate_model(
         )
 
         #
-        import ipdb
-        ipdb.set_trace()
         if decoder_only:
             generated_tokens = peft_comparison.text2text_utils.strip_input_tokens_from_generation(
                 input_ids=batch["input_ids"], 
@@ -336,8 +324,6 @@ def evaluate_model(
                 labels=batch["labels"], 
                 pad_token_id=tokenizer.pad_token_id
             )
-
-        ipdb.set_trace()
         generated_tokens = accelerator.pad_across_processes(
             generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
         )
@@ -379,6 +365,7 @@ def main():
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
+    #args.output_dir = args.output_dir.replace(args.model_name_or_path, args.model_name_or_path.replace("/", "-"))
     accelerator = Accelerator(project_dir=args.output_dir, log_with="wandb")
     if not accelerator.is_main_process:
         logger.remove()
