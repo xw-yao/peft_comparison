@@ -103,3 +103,34 @@ class DataCollatorForSeq2SeqWithMetadata:
             features["decoder_input_ids"] = decoder_input_ids
 
         return features
+
+
+@dataclass
+class DataCollatorForCausalLMWithMetadata:
+
+    tokenizer: PreTrainedTokenizerBase
+    padding: Union[bool, str, PaddingStrategy] = True
+    max_length: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+    label_pad_token_id: int = -100
+    return_tensors: str = "pt"
+
+    def __call__(self, features):
+
+        non_str_features = [
+            {k: v for k, v in feature.items() if k != "metadata"} for feature in features
+        ]
+        non_str_features = self.tokenizer.pad(
+            non_str_features,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors=self.return_tensors,
+        )
+
+        #
+        if "metadata" in features[0].keys():
+            non_str_features["metadata"] = [feature["metadata"] for feature in features]
+        features = non_str_features
+
+        return features

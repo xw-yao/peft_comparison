@@ -42,6 +42,7 @@ from transformers import (
     SchedulerType,
     get_scheduler,
     set_seed,
+    DataCollatorForLanguageModeling,
 )
 
 from accelerate import Accelerator
@@ -56,7 +57,7 @@ from adapters.models.llama.adapter_model import LlamaAdapterModel
 import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
-from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata
+from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata, DataCollatorForCausalLMWithMetadata
 from peft_comparison.tokenization_llama_fast import LlamaTokenizer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -187,7 +188,8 @@ def load_llama_with_adapters_and_lm_head(
     torch.cuda.empty_cache()
 
     # load the Adapters version of the Llama model
-    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
+    logger.info(f"Loading in 4-bit: {load_in_4bit}")
+    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32, device_map="auto")
     model.add_causal_lm_head("lm_head")
     model.heads.lm_head[0].weight = lm_head_parameters
 
@@ -255,7 +257,7 @@ def get_model(args):
                 param.requires_grad = False
     
     elif args.adapter_config_string == "ln_tuning":
-        model = model_class.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
             device_map={"": torch.cuda.current_device()},
@@ -349,19 +351,18 @@ def evaluate_model(
 
         #
         if decoder_only:
+            # replace token_ids corresponding to the input text (without the label text i.e. class label name or summary)
             generated_tokens = peft_comparison.text2text_utils.strip_input_tokens_from_generation(
-                input_ids=batch["input_ids"], 
                 generated_tokens=generated_tokens, 
-                labels=batch["labels"], 
-                pad_token_id=tokenizer.pad_token_id
+                len_input_wo_class=[i["input_len"] for i in batch["metadata"]], 
+                pad_token_id=tokenizer.pad_token_id,
             )
         generated_tokens = accelerator.pad_across_processes(
             generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
-        )
-        labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=tokenizer.pad_token_id)
-
-        generated_tokens = generated_tokens.cpu().numpy()
-        labels = labels.cpu().numpy()
+        ).cpu().numpy()
+        labels = accelerator.pad_across_processes(
+            batch["labels"], dim=1, pad_index=tokenizer.pad_token_id
+        ).cpu().numpy()
 
         if isinstance(generated_tokens, tuple):
             generated_tokens = generated_tokens[0]
@@ -447,7 +448,7 @@ def main():
     _dataset_name_for_preprocessing = args.dataset_name
     if args.task_type == "classification":
         _dataset_name_for_preprocessing = args.dataset_config_name
-
+    
     raw_datasets, postprocess_fn = peft_comparison.text2text_utils.dataset_to_text2text(
         raw_datasets,
         task_type=args.task_type,
@@ -457,29 +458,38 @@ def main():
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     column_names = raw_datasets["train"].column_names
-
-    padding = "max_length" if args.pad_to_max_length else False
-
-    def preprocess_function(examples, is_eval=False):
+    padding = "max_length" #if args.pad_to_max_length else False
+    def preprocess_function(examples, is_eval=False, decoder_only=False):
         inputs = examples["source_text"]
         targets = examples["target_text"]
         inputs = [args.source_prefix + inp for inp in inputs]
 
-        model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+        if not decoder_only:
+            model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+            labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
+            if padding == "max_length":
+                labels["input_ids"] = [
+                    [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+                ]
+            model_inputs["labels"] = labels["input_ids"]
+            if is_eval:
+                model_inputs["metadata"] = [{"targets": t} for t in targets]
 
-        # Tokenize targets with the `text_target` keyword argument
-        labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
+        else:
+            model_inputs = tokenizer(inputs, targets, max_length=args.max_source_length, padding=padding, truncation=True)
+            model_inputs["labels"] = model_inputs["input_ids"]
+            if is_eval:
+                input_wo_label = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=False)
+                input_wo_label = input_wo_label["input_ids"]
+                model_inputs["metadata"] = []
+                for idx in range(len(targets)):
+                    model_inputs["metadata"].append(
+                        {
+                            "targets": targets[idx],
+                            "input_len": len(input_wo_label[idx]),
+                        }
+                    )
 
-        # If we are padding here, replace all tokenizer.pad_token_id in the labels by -100 when we want to ignore
-        # padding in the loss.
-        if padding == "max_length":
-            labels["input_ids"] = [
-                [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
-            ]
-
-        model_inputs["labels"] = labels["input_ids"]
-        if is_eval:
-            model_inputs["metadata"] = [{"targets": t} for t in targets]
         return model_inputs
 
     with accelerator.main_process_first():
@@ -489,7 +499,7 @@ def main():
             num_proc=args.preprocessing_num_workers,
             remove_columns=column_names,
             desc="Running tokenizer on val dataset  ",
-            fn_kwargs={"is_eval": True},
+            fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
         )
         train_dataset = raw_datasets["train"].map(
             preprocess_function,
@@ -498,6 +508,7 @@ def main():
             num_proc=args.preprocessing_num_workers,
             remove_columns=column_names,
             desc="Running tokenizer on train dataset",
+            fn_kwargs={"decoder_only": args.decoder_only}
         )
 
     if len(raw_datasets["validation"]) < 1_000:
@@ -514,12 +525,20 @@ def main():
                 logger.info(f"  {k}: {v}")
 
     label_pad_token_id = -100
-    data_collator = DataCollatorForSeq2SeqWithMetadata(
-        tokenizer,
-        model=model,
-        label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=8,
-    )
+    if not args.decoder_only:
+        data_collator = DataCollatorForSeq2SeqWithMetadata(
+            tokenizer,
+            model=model,
+            label_pad_token_id=label_pad_token_id,
+            pad_to_multiple_of=8,
+        )
+    else:
+        data_collator = DataCollatorForCausalLMWithMetadata(
+            tokenizer=tokenizer,
+            padding=padding,
+            max_length=args.max_source_length,
+            pad_to_multiple_of=8,
+        )
 
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
@@ -664,14 +683,19 @@ def main():
         logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
 
-        for batch in active_dataloader:
-            print(batch["input_ids"].shape)
-            print(batch["labels"].shape)
-            global_step += 1
+        for batch_idx, batch in enumerate(active_dataloader):
+            if batch_idx == 0 and epoch == 0:
+                
+                logger.info("============= CHECKING FIRST BATCH =============")
+                logger.info("Tensor shapes: ")
+                logger.info(batch["input_ids"].shape)
+                logger.info("Decoded text of first example in the batch:")
+                s_text = tokenizer.batch_decode(batch["input_ids"][0, :].unsqueeze(0), skip_special_tokens=False)
+                logger.info(f"Source text: {s_text}")
 
+            global_step += 1
             outputs = model(**batch)
             loss = outputs.loss
-
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
             if global_step % args.gradient_accumulation_steps == 0 or global_step == len(train_dataloader) - 1:
@@ -704,10 +728,11 @@ def main():
                     tokenizer=tokenizer,
                     dataloader=eval_dataloader,
                     accelerator=accelerator,
-                    max_length=args.val_max_target_length,
+                    max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
                     num_beams=1,
                     max_iters=args.max_eval_steps_durig_validation,
                     postprocess_fn=postprocess_fn,
+                    decoder_only=args.decoder_only
                 )
                 logger.info(pformat(result))
                 accelerator.log(result, step=update_step)
@@ -721,10 +746,11 @@ def main():
             tokenizer=tokenizer,
             dataloader=eval_dataloader,
             accelerator=accelerator,
-            max_length=args.val_max_target_length,
+            max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
             num_beams=args.num_beams,
             max_iters=None,
             postprocess_fn=postprocess_fn,
+            decoder_only=args.decoder_only
         )
         logger.info(pformat(result))
         accelerator.log(result, step=update_step)

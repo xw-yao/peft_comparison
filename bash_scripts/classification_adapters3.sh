@@ -4,7 +4,7 @@
 # t5-3b: 1 (with quantization)
 set -e
 
-export model="meta-llama/Llama-2-7b-hf"
+export model="meta-llama/Llama-2-70b-hf"
 export dataset_name="super_glue"
 for adapter_config_string in \
     "compacter" "compacter++" "lora" "ia3"
@@ -44,7 +44,6 @@ do
             --num_beams 5 \
             --learning_rate $lr \
             --num_train_epochs 3 \
-            --load_in_4bit \
             --wandb_project "PEFT_comparison_v2" \
 
 done

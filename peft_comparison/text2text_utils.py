@@ -2,6 +2,7 @@ import re
 import nltk
 from functools import partial
 import torch
+import ipdb
 
 from peft_comparison.mappings import (
     summarization_name_mapping,
@@ -141,13 +142,6 @@ def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, i
     ex["source_text"] = input_text.strip()
     ex["target_text"] = label_name
 
-    # @NOTE: we should be careful in not passing the "target_text" as labels to the decoder-only model. 
-    if decoder_only:
-        source_text = ex.pop("source_text")
-        target_text = ex.pop("target_text")
-        ex["source_text"] = source_text + " " + target_text
-        ex["target_text"] = target_text
-
     return ex
 
 
@@ -178,18 +172,19 @@ def postprocess_classification(preds, labels, dataset_config_name=None):
 
     return pred_ids, label_ids
 
-def strip_input_tokens_from_generation(input_ids, generated_tokens, labels, pad_token_id):
-    generated_tokens_cleaned = pad_token_id * torch.ones(generated_tokens.shape, dtype=generated_tokens.dtype, device=generated_tokens.device)
+def strip_input_tokens_from_generation(generated_tokens, len_input_wo_class, pad_token_id):
     bsz, seq_len = generated_tokens.shape
     for example in range(bsz):
-        len_input = sum(input_ids[example, :] != pad_token_id) - sum(labels[example, :] != pad_token_id)
-        generated_tokens_wo_input = generated_tokens[example, len_input:]
-        generated_tokens_cleaned[example, :len(generated_tokens_wo_input)] = generated_tokens_wo_input
-
-    return generated_tokens_cleaned
+        len_input = len_input_wo_class[example]
+        generated_tokens[example, :len_input] = pad_token_id
+    return generated_tokens
 
 def string_label_to_class_id(string_label, label_classes, default=-1):
     """Returns index of string_label in label_classes or default if not found."""
+
+    # @TODO: I feel like this is quite stringent. Not changing it because I want to keep it 
+    # same for t5 and Llama
+
     if string_label in label_classes:
         return label_classes.index(string_label)  # index, because this is a list
 
