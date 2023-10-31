@@ -401,9 +401,6 @@ def evaluate_model(
         generated_tokens = accelerator.pad_across_processes(
             generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
         ).cpu().numpy()
-        labels = accelerator.pad_across_processes(
-            batch["labels"], dim=1, pad_index=tokenizer.pad_token_id
-        ).cpu().numpy()
 
         if isinstance(generated_tokens, tuple):
             generated_tokens = generated_tokens[0]
@@ -483,6 +480,7 @@ def main():
 
     # Load pretrained model and tokenizer
     model, tokenizer = get_model(args)
+    torch.cuda.reset_peak_memory_stats()
 
     ############################################
     # Data preprocessing
@@ -760,30 +758,35 @@ def main():
                 progress_bar.update()
                 optimizer.step()
                 lr_scheduler.step()
-                optimizer.zero_grad()
-                update_step += 1
-                update_time = time.time() - batch_start_time
-                batch_start_time = time.time()
 
-                # log throughput
-                tokens_in_update = tokens_seen - tokens_seen_before
-                accelerator.log(
-                    {
-                        "throughput_tokens": tokens_in_update / update_time,
-                        "throughput_examples": args.total_batch_size / update_time,
-                        "throughput_batches": batches_in_update / update_time,
-                    },
-                    step=update_step,
-                )
-                tokens_seen_before = tokens_seen
+                # log memory and thoughput
+                if (update_step % 10) == 0:
+                    tokens_in_update = tokens_seen - tokens_seen_before
+                    peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
+                    current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)
+                    update_time = time.time() - batch_start_time
+                    batch_start_time = time.time()
+                    accelerator.log(
+                        {
+                            "throughput_tokens": tokens_in_update / update_time,
+                            "throughput_examples": args.total_batch_size / update_time,
+                            "throughput_batches": batches_in_update / update_time,
+                            "peak_memory_usage": peak_memory_usage,
+                            "current_memory_usage": current_memory_usage,
+                        },
+                        step=update_step,
+                    )
+                    tokens_seen_before = tokens_seen
+
+                # clear grads
+                optimizer.zero_grad()
+                update_step += 1                
 
             if update_step >= args.max_train_steps:
                 logger.info("Max number of steps reached. Stopping training")
                 break
 
             #
-            peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
-            current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)
             accelerator.log(
                 {
                     "train/loss": loss,
@@ -791,8 +794,6 @@ def main():
                     "epoch": epoch,
                     "update_step": update_step,
                     "global_steps": global_step,
-                    "peak_memory_usage": peak_memory_usage,
-                    "current_memory_usage": current_memory_usage,
                 },
                 step=update_step,
             )
