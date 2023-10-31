@@ -215,7 +215,7 @@ def get_model(args):
         model_class = LlamaAdapterModel
 
     # add peft modules
-    if not args.adapter_config_string in ["bitfit", "ln_tuning"]:
+    if not args.adapter_config_string in ["bitfit", "ln_tuning", "attn_tuning", "full_tuning"]:
         
         # load model
         if "t5" in args.model_name_or_path:
@@ -270,6 +270,31 @@ def get_model(args):
             # T5 layer norm key:    layer_norm
             if not (("_layernorm" in name) or ("layer_norm" in name)):
                 param.requires_grad = False
+    
+    elif args.adapter_config_string == "attn_tuning":
+        NotImplementedError("Attention tuning is not implmented yet")
+
+        """
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=args.torch_dtype,
+            device_map={"": torch.cuda.current_device()},
+        )
+                
+        # freeze all but LN parameters
+        for name, param in model.named_parameters():
+            # LlaMa layer norm key: ?
+            # T5 layer norm key:    ?
+            if not (("" in name) or ("" in name)):
+                param.requires_grad = False
+        """
+
+    elif args.adapter_config_string == "full_tuning":
+        model = model_class.from_pretrained(
+            args.model_name_or_path,
+            torch_dtype=args.torch_dtype,
+            device_map={"": torch.cuda.current_device()},
+        )
     
     # send to device if not quantized
     if (not args.load_in_8bit) and (not args.load_in_4bit):
@@ -338,6 +363,10 @@ def evaluate_model(
     )
     peak_memory_usage = 0
     current_memory_usage = 0
+    batch_start_time = time.time()
+    throughput_tokens = 0
+    throughput_examples = 0
+    throughput_batches = 0
     for eval_step, batch in enumerate(dataloader):
         pbar.update()
         if max_iters is not None and eval_step > max_iters:
@@ -351,10 +380,15 @@ def evaluate_model(
             max_length=max_length,
             num_beams=num_beams,
         )
+        update_time = time.time() - batch_start_time
+        batch_start_time = time.time()
 
-        # track memory usage
+        # track memory usage and throughput
         peak_memory_usage += torch.cuda.max_memory_allocated() / (1024 ** 2) 
         current_memory_usage += torch.cuda.memory_allocated() / (1024 ** 2)
+        throughput_tokens += batch["input_ids"].numel() / update_time
+        throughput_examples += batch["input_ids"].shape[0] / update_time
+        throughput_batches += 1 / update_time
 
         #
         if decoder_only:
@@ -392,9 +426,13 @@ def evaluate_model(
     else:
         result = metric.compute()
 
+    # save performance and other metrics to track memory consumption and throughput 
     result = {f"eval/{k}": round(v * 100, 4) for k, v in result.items()}
-    result["peak_memory_usage"] = peak_memory_usage / (eval_step + 1)
-    result["current_memory_usage"] = current_memory_usage / (eval_step + 1)
+    result["eval/peak_memory_usage"] = peak_memory_usage / (eval_step + 1)
+    result["eval/current_memory_usage"] = current_memory_usage / (eval_step + 1)
+    result["eval/throughput_tokens"] = throughput_tokens / (eval_step + 1)
+    result["eval/throughput_examples"] = throughput_examples / (eval_step + 1)
+    result["eval/throughput_batches"] = throughput_batches / (eval_step + 1)
 
     model.train()
     return result
@@ -404,7 +442,8 @@ def main():
     args = parse_args()
 
     # some global variables that we will use
-    world_size = int(os.environ["WORLD_SIZE"])
+    all_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
+    world_size = len(all_visible_devices)
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -691,11 +730,18 @@ def main():
     if args.resume_from_checkpoint and resume_step is not None:
         active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
 
+    tokens_seen = 0
+    tokens_seen_before = 0
+    batches_in_update = args.gradient_accumulation_steps * world_size
     for epoch in range(starting_epoch, args.num_train_epochs):
         logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
         for batch_idx, batch in enumerate(active_dataloader):
+            # vars for calculating throughput 
             batch_start_time = time.time()
+            tokens_seen += batch["input_ids"].numel() * world_size
+
+            # print first batch
             if batch_idx == 0 and epoch == 0:
                 
                 logger.info("============= CHECKING FIRST BATCH =============")
@@ -716,18 +762,26 @@ def main():
                 lr_scheduler.step()
                 optimizer.zero_grad()
                 update_step += 1
-                update_time = batch_start_time - time.time()
+                update_time = time.time() - batch_start_time
                 batch_start_time = time.time()
+
+                # log throughput
+                tokens_in_update = tokens_seen - tokens_seen_before
+                accelerator.log(
+                    {
+                        "throughput_tokens": tokens_in_update / update_time,
+                        "throughput_examples": args.total_batch_size / update_time,
+                        "throughput_batches": batches_in_update / update_time,
+                    },
+                    step=update_step,
+                )
+                tokens_seen_before = tokens_seen
 
             if update_step >= args.max_train_steps:
                 logger.info("Max number of steps reached. Stopping training")
                 break
 
             #
-            tokens_seen += batch["input_ids"].numel() * world_size
-            tokens_in_update = tokens_seen - tokens_seen_before
-            tokens_seen_before = tokens_seen
-            batches_in_update = args.gradient_accumulation * world_size
             peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
             current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)
             accelerator.log(
@@ -737,9 +791,6 @@ def main():
                     "epoch": epoch,
                     "update_step": update_step,
                     "global_steps": global_step,
-                    "throughput_tokens": tokens_in_update / update_time,
-                    "throughput_examples": args.total_batch_size / update_time,
-                    "throughput_batches": batches_in_update / update_time,
                     "peak_memory_usage": peak_memory_usage,
                     "current_memory_usage": current_memory_usage,
                 },
@@ -764,22 +815,23 @@ def main():
                 accelerator.log(result, step=update_step)
 
     # final evaluation
-    if update_step % args.eval_every_steps != 0:
-        logger.info(f"Final evaluation (step={update_step})")
-        result = evaluate_model(
-            model=model,
-            metric=metric,
-            tokenizer=tokenizer,
-            dataloader=eval_dataloader,
-            accelerator=accelerator,
-            max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
-            num_beams=args.num_beams,
-            max_iters=None,
-            postprocess_fn=postprocess_fn,
-            decoder_only=args.decoder_only
-        )
-        logger.info(pformat(result))
-        accelerator.log(result, step=update_step)
+    # @NOTE: commenting the following if condition because we want to do atleast one evaluation with beam search
+    #if (update_step + 1) % args.eval_every_steps != 0:
+    logger.info(f"Final evaluation (step={update_step})")
+    result = evaluate_model(
+        model=model,
+        metric=metric,
+        tokenizer=tokenizer,
+        dataloader=eval_dataloader,
+        accelerator=accelerator,
+        max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
+        num_beams=args.num_beams,
+        max_iters=None,
+        postprocess_fn=postprocess_fn,
+        decoder_only=args.decoder_only
+    )
+    logger.info(pformat(result))
+    accelerator.log(result, step=update_step)
 
     # save results and all arguments
     all_results = result.copy()

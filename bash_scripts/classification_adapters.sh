@@ -7,7 +7,8 @@ set -e
 export model="t5-small"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "pfeiffer" "houlsby" "scaled_parallel"
+    "full_tuning"
+    #"pfeiffer" "houlsby" "scaled_parallel"
     #"compacter" "compacter++" "lora" "ia3"
     #"unipelt" "prefix_tuning" "prefix_tuning_flat" "mam" "ln_tuning"
 do
