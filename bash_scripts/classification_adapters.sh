@@ -4,7 +4,7 @@
 # t5-3b: 1 (with quantization)
 set -e
 
-export model="t5-11b"
+export model="t5-small"
 export dataset_name="super_glue"
 for adapter_config_string in \
     "pfeiffer" "houlsby" "scaled_parallel"
