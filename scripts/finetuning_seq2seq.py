@@ -25,6 +25,7 @@ import math
 import os
 import random
 from pprint import pformat
+import time
 
 import torch
 import torch.nn as nn
@@ -335,6 +336,8 @@ def evaluate_model(
         total=max_iters or len(dataloader),
         ncols=80,
     )
+    peak_memory_usage = 0
+    current_memory_usage = 0
     for eval_step, batch in enumerate(dataloader):
         pbar.update()
         if max_iters is not None and eval_step > max_iters:
@@ -348,6 +351,10 @@ def evaluate_model(
             max_length=max_length,
             num_beams=num_beams,
         )
+
+        # track memory usage
+        peak_memory_usage += torch.cuda.max_memory_allocated() / (1024 ** 2) 
+        current_memory_usage += torch.cuda.memory_allocated() / (1024 ** 2)
 
         #
         if decoder_only:
@@ -386,6 +393,8 @@ def evaluate_model(
         result = metric.compute()
 
     result = {f"eval/{k}": round(v * 100, 4) for k, v in result.items()}
+    result["peak_memory_usage"] = peak_memory_usage / (eval_step + 1)
+    result["current_memory_usage"] = current_memory_usage / (eval_step + 1)
 
     model.train()
     return result
@@ -393,6 +402,9 @@ def evaluate_model(
 
 def main():
     args = parse_args()
+
+    # some global variables that we will use
+    world_size = int(os.environ["WORLD_SIZE"])
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -682,8 +694,8 @@ def main():
     for epoch in range(starting_epoch, args.num_train_epochs):
         logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
-
         for batch_idx, batch in enumerate(active_dataloader):
+            batch_start_time = time.time()
             if batch_idx == 0 and epoch == 0:
                 
                 logger.info("============= CHECKING FIRST BATCH =============")
@@ -704,11 +716,20 @@ def main():
                 lr_scheduler.step()
                 optimizer.zero_grad()
                 update_step += 1
+                update_time = batch_start_time - time.time()
+                batch_start_time = time.time()
 
             if update_step >= args.max_train_steps:
                 logger.info("Max number of steps reached. Stopping training")
                 break
 
+            #
+            tokens_seen += batch["input_ids"].numel() * world_size
+            tokens_in_update = tokens_seen - tokens_seen_before
+            tokens_seen_before = tokens_seen
+            batches_in_update = args.gradient_accumulation * world_size
+            peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
+            current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)
             accelerator.log(
                 {
                     "train/loss": loss,
@@ -716,6 +737,11 @@ def main():
                     "epoch": epoch,
                     "update_step": update_step,
                     "global_steps": global_step,
+                    "throughput_tokens": tokens_in_update / update_time,
+                    "throughput_examples": args.total_batch_size / update_time,
+                    "throughput_batches": batches_in_update / update_time,
+                    "peak_memory_usage": peak_memory_usage,
+                    "current_memory_usage": current_memory_usage,
                 },
                 step=update_step,
             )
