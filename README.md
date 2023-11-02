@@ -6,9 +6,18 @@ Comparing a bunch of PEFT methods on T5 and LLaMA.
 
 Notice that we require specifically `adapter-transformers` (right before the 2.0)
 
-```
+```bash
 pip install -e .
+cd adapter-transformers
+pip install -e .
+cd ..
 python -m nltk.downloader punkt
+```
+
+If you are running LLaMA fine-tuning, you will probably also need
+
+```bash
+huggingface-cli login
 ```
 
 ## Usage example

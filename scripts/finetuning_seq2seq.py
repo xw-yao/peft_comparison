@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Fine-tuning a 🤗 Transformers model on summarization.
+Fine-tuning a 🤗 Transformers model on summarization and text-to-text classification
 """
 # You can also adapt this script on your own summarization task. Pointers for this are left as comments.
 
@@ -274,21 +274,6 @@ def get_model(args):
     elif args.adapter_config_string == "attn_tuning":
         NotImplementedError("Attention tuning is not implmented yet")
 
-        """
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=args.torch_dtype,
-            device_map={"": torch.cuda.current_device()},
-        )
-                
-        # freeze all but LN parameters
-        for name, param in model.named_parameters():
-            # LlaMa layer norm key: ?
-            # T5 layer norm key:    ?
-            if not (("" in name) or ("" in name)):
-                param.requires_grad = False
-        """
-
     elif args.adapter_config_string == "full_tuning":
         model_class = AutoModelForCausalLM if "llama" in args.model_name_or_path.lower() else AutoModelForSeq2SeqLM
         model = model_class.from_pretrained(
@@ -300,7 +285,7 @@ def get_model(args):
     # send to device if not quantized
     if (not args.load_in_8bit) and (not args.load_in_4bit):
         model = model.to(dtype=args.torch_dtype)
-    
+
     # adapter is not yet on the device
     if args.load_in_8bit:
         for name, module in model.named_modules():
@@ -440,8 +425,7 @@ def main():
     args = parse_args()
 
     # some global variables that we will use
-    all_visible_devices = os.environ["CUDA_VISIBLE_DEVICES"].split(",")
-    world_size = len(all_visible_devices)
+    world_size = int(os.environ.get("WORLD_SIZE", 1))
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
