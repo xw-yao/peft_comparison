@@ -59,7 +59,6 @@ import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata, DataCollatorForCausalLMWithMetadata
-from peft_comparison.tokenization_llama_fast import LlamaTokenizer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 datasets.utils.logging.set_verbosity_error()
@@ -464,7 +463,7 @@ def main():
     logger.info("*" * 40)
 
     # Load pretrained model and tokenizer
-    model, tokenizer = get_model(args)
+    model, tokenizer = get_model(args, device=device)
     torch.cuda.reset_peak_memory_stats()
 
     ############################################
