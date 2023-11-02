@@ -7,15 +7,14 @@ set -e
 export model="meta-llama/Llama-2-7b-hf"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "full_tuning" 
-    #"pfeiffer" "houlsby" "scaled_parallel"
+    "pfeiffer" "houlsby" "scaled_parallel"
     #"compacter" "compacter++" "lora" "ia3"
     #"unipelt" "prefix_tuning" "prefix_tuning_flat" "mam"
-    #"ln_tuning"
+    #"ln_tuning" "full_tuning" 
 do
 
 for dataset_config_name in \
-    "boolq" "cb" "copa" "rte"
+    "cb" "copa" "rte" "boolq" 
 do
 
     export experiment_name="${model}_${dataset_name}_${dataset_config_name}_${adapter_config_string}"

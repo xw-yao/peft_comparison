@@ -10,11 +10,11 @@ for adapter_config_string in \
     "unipelt" "prefix_tuning" "prefix_tuning_flat" "mam"
     #"pfeiffer" "houlsby" "scaled_parallel"
     #"compacter" "compacter++" "lora" "ia3"
-    #"ln_tuning"
+    #"ln_tuning" "full_tuning" 
 do
 
 for dataset_config_name in \
-    "boolq" "cb" "copa" "rte"
+    "cb" "copa" "rte" "boolq" 
 do
 
     export experiment_name="${model}_${dataset_name}_${dataset_config_name}_${adapter_config_string}"

@@ -183,14 +183,14 @@ def load_llama_with_adapters_and_lm_head(
     # @NOTE: we are using torch.float32 to overcome the compatibility issues with the new Adapters library
     
     # first we load the reference model from huggingface
-    model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
+    model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32, device_map={"": torch.cuda.current_device()})
     lm_head_parameters = model_ref.lm_head.weight
     del model_ref
     torch.cuda.empty_cache()
 
     # load the Adapters version of the Llama model
     logger.info(f"Loading in 4-bit: {load_in_4bit}")
-    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32, device_map="auto")
+    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32, device_map={"": torch.cuda.current_device()})
     model.add_causal_lm_head("lm_head")
     model.heads.lm_head[0].weight = lm_head_parameters
 
