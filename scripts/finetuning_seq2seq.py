@@ -290,10 +290,11 @@ def get_model(args):
         """
 
     elif args.adapter_config_string == "full_tuning":
+        model_class = AutoModelForCausalLM if "llama" in args.model_name_or_path.lower() else AutoModelForSeq2SeqLM
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": torch.cuda.current_device()},
+            device_map="auto",#{"": torch.cuda.current_device()},
         )
     
     # send to device if not quantized
@@ -525,7 +526,12 @@ def main():
                 model_inputs["metadata"] = [{"targets": t} for t in targets]
 
         else:
-            model_inputs = tokenizer(inputs, targets, max_length=args.max_source_length, padding=padding, truncation=True)
+            if is_eval:
+                model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+            else:
+                model_inputs = tokenizer(inputs, targets, max_length=args.max_source_length, padding=padding, truncation=True)
+            
+            # @NOTE: we can set labels to input_ids because the token shifting is taken care of in the modeling_llaama file
             model_inputs["labels"] = model_inputs["input_ids"]
             if is_eval:
                 input_wo_label = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=False)
@@ -609,6 +615,8 @@ def main():
     ]
     total_parameters = sum(p.numel() for p in model.parameters())
     trainable_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    args.total_parameters = total_parameters
+    args.trainable_parameters = trainable_parameters
     logger.info(f"Total model parameters: {total_parameters:,}")
     logger.info(f"Trainable parameters  : {trainable_parameters:,} ({trainable_parameters / total_parameters * 100:.4f}%)")
     if args.verbocity > 1:
@@ -812,7 +820,7 @@ def main():
                     postprocess_fn=postprocess_fn,
                     decoder_only=args.decoder_only
                 )
-                logger.info(pformat(result))
+                #logger.info(pformat(result))
                 accelerator.log(result, step=update_step)
 
     # final evaluation

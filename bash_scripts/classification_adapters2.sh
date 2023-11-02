@@ -4,10 +4,11 @@
 # t5-3b: 1 (with quantization)
 set -e
 
-export model="t5-11b"
+export model="t5-3b"
 export dataset_name="super_glue"
 for adapter_config_string in \
-    "compacter" "compacter++" "lora" "ia3"
+    "full_tuning" 
+    #"compacter" "compacter++" "lora" "ia3"
     #"pfeiffer" "houlsby" "scaled_parallel"
     #"unipelt" "prefix_tuning" "prefix_tuning_flat" "mam" "ln_tuning"
 do
@@ -36,7 +37,7 @@ do
             --dataset_config_name $dataset_config_name \
             --model_name_or_path $model \
             --adapter_config_string $adapter_config_string \
-            --per_device_train_batch_size 2 \
+            --per_device_train_batch_size 4 \
             --total_batch_size 32 \
             --max_source_length 512 \
             --max_target_length 8 \
