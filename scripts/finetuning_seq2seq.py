@@ -163,7 +163,7 @@ def parse_args():
                              "To support dataset you need to at least include it into "
                              "peft_comparison.mappings.summarization_name_mapping or peft_comparison.mappings.task_to_keys "
                              "and add a postprocessing function")
-    
+
     args.decoder_only = False if "t5" in args.model_name_or_path else True
 
     return args
@@ -172,56 +172,56 @@ def load_llama_with_adapters_and_lm_head(
         model_class,
         model_name_or_path,
         load_in_4bit,
-):
+    ):
     """
     This function requires Adapters branch of the Adapter-hub library:
     https://github.com/adapter-hub/adapter-transformers/tree/adapters
-    
+
     """
 
     # @NOTE: we are using torch.float32 to overcome the compatibility issues with the new Adapters library
-    
+
     # first we load the reference model from huggingface
-    model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32, device_map={"": torch.cuda.current_device()})
+    model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
     lm_head_parameters = model_ref.lm_head.weight
     del model_ref
     torch.cuda.empty_cache()
 
     # load the Adapters version of the Llama model
     logger.info(f"Loading in 4-bit: {load_in_4bit}")
-    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32, device_map={"": torch.cuda.current_device()})
+    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
     model.add_causal_lm_head("lm_head")
     model.heads.lm_head[0].weight = lm_head_parameters
 
     return model
 
 
-def get_model(args):
+def get_model(args, device):
     if "t5" in args.model_name_or_path and args.source_prefix is None and args.task_type == "summarization":
         logger.warning(
             "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
             "`--source_prefix 'summarize: ' `"
         )
-    
-    # tokenizer
-    tokenizer = LlamaTokenizer.from_pretrained(args.model_name_or_path) if "llama" in args.model_name_or_path.lower() else AutoTokenizer.from_pretrained(args.model_name_or_path)
 
-    # model 
-    model_class = AutoModelForSeq2SeqLM    
+    # tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+
+    # model
+    model_class = AutoModelForSeq2SeqLM
     if "llama" in args.model_name_or_path.lower():
         #raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
-        logger.info("Using LLAMA model")
+        logger.info("Using LLaMA model")
         model_class = LlamaAdapterModel
 
     # add peft modules
     if not args.adapter_config_string in ["bitfit", "ln_tuning", "attn_tuning", "full_tuning"]:
-        
+
         # load model
         if "t5" in args.model_name_or_path:
             model = model_class.from_pretrained(
                 args.model_name_or_path,
                 torch_dtype=args.torch_dtype,
-                device_map={"": torch.cuda.current_device()},
+                device_map={"": device},
                 load_in_8bit=args.load_in_8bit,
             )
 
@@ -242,34 +242,34 @@ def get_model(args):
         model.train_adapter("adapter")
         for name, module in model.named_modules():
             if "adapter" in name:
-                module.to(torch.cuda.current_device())
-    
+                module.to(device)
+
     elif args.adapter_config_string == "bitfit":
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": torch.cuda.current_device()},
+            device_map={"": device},
         )
 
         # freeze all but bias parameters
         for name, param in model.named_parameters():
             if not "bias" in name:
                 param.requires_grad = False
-    
+
     elif args.adapter_config_string == "ln_tuning":
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": torch.cuda.current_device()},
+            device_map={"": device},
         )
-                
+
         # freeze all but LN parameters
         for name, param in model.named_parameters():
             # LlaMa layer norm key: input_layernorm, post_attention_layernorm
             # T5 layer norm key:    layer_norm
             if not (("_layernorm" in name) or ("layer_norm" in name)):
                 param.requires_grad = False
-    
+
     elif args.adapter_config_string == "attn_tuning":
         NotImplementedError("Attention tuning is not implmented yet")
 
@@ -278,18 +278,18 @@ def get_model(args):
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map="auto",#{"": torch.cuda.current_device()},
+            device_map={"": device},
         )
-    
+
     # send to device if not quantized
     if (not args.load_in_8bit) and (not args.load_in_4bit):
         model = model.to(dtype=args.torch_dtype)
 
     # adapter is not yet on the device
-    if args.load_in_8bit:
+    if args.load_in_8bit or args.load_in_4bit:
         for name, module in model.named_modules():
             if "adapter" in name:
-                module.to(device=torch.cuda.current_device(), dtype=args.torch_dtype)
+                module.to(device=device, dtype=args.torch_dtype)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -369,7 +369,7 @@ def evaluate_model(
         batch_start_time = time.time()
 
         # track memory usage and throughput
-        peak_memory_usage += torch.cuda.max_memory_allocated() / (1024 ** 2) 
+        peak_memory_usage += torch.cuda.max_memory_allocated() / (1024 ** 2)
         current_memory_usage += torch.cuda.memory_allocated() / (1024 ** 2)
         throughput_tokens += batch["input_ids"].numel() / update_time
         throughput_examples += batch["input_ids"].shape[0] / update_time
@@ -379,8 +379,8 @@ def evaluate_model(
         if decoder_only:
             # replace token_ids corresponding to the input text (without the label text i.e. class label name or summary)
             generated_tokens = peft_comparison.text2text_utils.strip_input_tokens_from_generation(
-                generated_tokens=generated_tokens, 
-                len_input_wo_class=[i["input_len"] for i in batch["metadata"]], 
+                generated_tokens=generated_tokens,
+                len_input_wo_class=[i["input_len"] for i in batch["metadata"]],
                 pad_token_id=tokenizer.pad_token_id,
             )
         generated_tokens = accelerator.pad_across_processes(
@@ -408,7 +408,7 @@ def evaluate_model(
     else:
         result = metric.compute()
 
-    # save performance and other metrics to track memory consumption and throughput 
+    # save performance and other metrics to track memory consumption and throughput
     result = {f"eval/{k}": round(v * 100, 4) for k, v in result.items()}
     result["eval/peak_memory_usage"] = peak_memory_usage / (eval_step + 1)
     result["eval/current_memory_usage"] = current_memory_usage / (eval_step + 1)
@@ -424,7 +424,11 @@ def main():
     args = parse_args()
 
     # some global variables that we will use
+    if "WORLD_SIZE" not in os.environ:
+        logger.warning("WORLD_SIZE not in os.environ, setting to 1")
+
     world_size = int(os.environ.get("WORLD_SIZE", 1))
+    device = torch.cuda.current_device()
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
@@ -481,7 +485,7 @@ def main():
     _dataset_name_for_preprocessing = args.dataset_name
     if args.task_type == "classification":
         _dataset_name_for_preprocessing = args.dataset_config_name
-    
+
     raw_datasets, postprocess_fn = peft_comparison.text2text_utils.dataset_to_text2text(
         raw_datasets,
         task_type=args.task_type,
@@ -513,7 +517,7 @@ def main():
                 model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
             else:
                 model_inputs = tokenizer(inputs, targets, max_length=args.max_source_length, padding=padding, truncation=True)
-            
+
             # @NOTE: we can set labels to input_ids because the token shifting is taken care of in the modeling_llaama file
             model_inputs["labels"] = model_inputs["input_ids"]
             if is_eval:
@@ -726,13 +730,13 @@ def main():
         logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
         for batch_idx, batch in enumerate(active_dataloader):
-            # vars for calculating throughput 
+            # vars for calculating throughput
             batch_start_time = time.time()
             tokens_seen += batch["input_ids"].numel() * world_size
 
             # print first batch
             if batch_idx == 0 and epoch == 0:
-                
+
                 logger.info("============= CHECKING FIRST BATCH =============")
                 logger.info("Tensor shapes: ")
                 logger.info(batch["input_ids"].shape)
@@ -745,39 +749,42 @@ def main():
             loss = outputs.loss
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
-            if global_step % args.gradient_accumulation_steps == 0 or global_step == len(train_dataloader) - 1:
-                progress_bar.update()
-                optimizer.step()
-                lr_scheduler.step()
 
-                # log memory and thoughput
-                if (update_step % 10) == 0:
-                    tokens_in_update = tokens_seen - tokens_seen_before
-                    peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
-                    current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)
-                    update_time = time.time() - batch_start_time
-                    batch_start_time = time.time()
-                    accelerator.log(
-                        {
-                            "throughput_tokens": tokens_in_update / update_time,
-                            "throughput_examples": args.total_batch_size / update_time,
-                            "throughput_batches": batches_in_update / update_time,
-                            "peak_memory_usage": peak_memory_usage,
-                            "current_memory_usage": current_memory_usage,
-                        },
-                        step=update_step,
-                    )
-                    tokens_seen_before = tokens_seen
+            if not(global_step % args.gradient_accumulation_steps == 0 or global_step == len(train_dataloader) - 1):
+                continue
+            # the code below is only executed on the update step
 
-                # clear grads
-                optimizer.zero_grad()
-                update_step += 1                
+            progress_bar.update()
+            optimizer.step()
+            lr_scheduler.step()
+
+            # log memory and thoughput
+            if (update_step % 10) == 0:
+                tokens_in_update = tokens_seen - tokens_seen_before
+                peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
+                current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)
+                update_time = time.time() - batch_start_time
+                batch_start_time = time.time()
+                accelerator.log(
+                    {
+                        "throughput_tokens": tokens_in_update / update_time,
+                        "throughput_examples": args.total_batch_size / update_time,
+                        "throughput_batches": batches_in_update / update_time,
+                        "peak_memory_usage": peak_memory_usage,
+                        "current_memory_usage": current_memory_usage,
+                    },
+                    step=update_step,
+                )
+                tokens_seen_before = tokens_seen
+
+            # clear grads
+            optimizer.zero_grad()
+            update_step += 1
 
             if update_step >= args.max_train_steps:
                 logger.info("Max number of steps reached. Stopping training")
                 break
 
-            #
             accelerator.log(
                 {
                     "train/loss": loss,
@@ -803,7 +810,6 @@ def main():
                     postprocess_fn=postprocess_fn,
                     decoder_only=args.decoder_only
                 )
-                #logger.info(pformat(result))
                 accelerator.log(result, step=update_step)
 
     # final evaluation
