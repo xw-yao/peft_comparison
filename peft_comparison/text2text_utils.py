@@ -44,7 +44,6 @@ def dataset_to_text2text(dataset, task_type, dataset_name, decoder_only=False):
         raise ValueError(f"Unknown task type: {task_type}")
 
     # task_type == classification from now on
-
     if dataset_name not in clf_label_names_mapping:
         raise ValueError(f"Unknown dataset name: {dataset_name}. Note that for classification, dataset_name must be a glue/superglue task name (e.g., 'cola')")
     dataset = dataset.map(

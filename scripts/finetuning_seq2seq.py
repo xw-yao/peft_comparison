@@ -472,7 +472,6 @@ def main():
 
     ############################################
     # Data preprocessing
-
     raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
     if args.subsample_data is not None:
         logger.warning(f"Subsampling the dataset to {args.subsample_data} first examples.")
@@ -747,8 +746,6 @@ def main():
                 logger.info("Decoded text of first example in the batch:")
                 s_text = tokenizer.batch_decode(batch["input_ids"][0, :].unsqueeze(0), skip_special_tokens=False)
                 logger.info(f"Source text: {s_text}")
-                import ipdb
-                ipdb.set_trace()
 
             global_step += 1
             outputs = model(**batch)
