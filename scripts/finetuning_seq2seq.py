@@ -490,12 +490,13 @@ def main():
         raw_datasets,
         task_type=args.task_type,
         dataset_name=_dataset_name_for_preprocessing,
+        decoder_only=args.decoder_only,
     )
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     column_names = raw_datasets["train"].column_names
-    padding = "max_length" #if args.pad_to_max_length else False
+    padding = "max_length" if args.pad_to_max_length else False
     def preprocess_function(examples, is_eval=False, decoder_only=False):
         inputs = examples["source_text"]
         targets = examples["target_text"]
@@ -513,12 +514,15 @@ def main():
                 model_inputs["metadata"] = [{"targets": t} for t in targets]
 
         else:
+            # @NOTE: the way we have written preprocessing and collation for llama,
+            # - set padding=False in preprocessing (so that we know what's the max_len in the batch)
+            # - set padding=True in collation (so that we can pad to the multiple of 8 > max_len in the batch)
+            # - we can set labels to input_ids because the token shifting is taken care of in the modeling_llaama file
             if is_eval:
-                model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
+                model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=True)
             else:
-                model_inputs = tokenizer(inputs, targets, max_length=args.max_source_length, padding=padding, truncation=True)
-
-            # @NOTE: we can set labels to input_ids because the token shifting is taken care of in the modeling_llaama file
+                inputs = [i + " " + t for i, t in zip(inputs, targets)]
+                model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=True)
             model_inputs["labels"] = model_inputs["input_ids"]
             if is_eval:
                 input_wo_label = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=False)
@@ -577,7 +581,7 @@ def main():
     else:
         data_collator = DataCollatorForCausalLMWithMetadata(
             tokenizer=tokenizer,
-            padding=padding,
+            padding=True,
             max_length=args.max_source_length,
             pad_to_multiple_of=8,
         )
@@ -743,6 +747,8 @@ def main():
                 logger.info("Decoded text of first example in the batch:")
                 s_text = tokenizer.batch_decode(batch["input_ids"][0, :].unsqueeze(0), skip_special_tokens=False)
                 logger.info(f"Source text: {s_text}")
+                import ipdb
+                ipdb.set_trace()
 
             global_step += 1
             outputs = model(**batch)

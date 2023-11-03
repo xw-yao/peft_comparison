@@ -12,21 +12,33 @@ summarization_name_mapping = {
     "wiki_summary": ("article", "highlights"),
 }
 
-
+# @TODO: copa keys should include "choice2" and "question", check with Vlad
 task_to_keys = {
+    # acceptability kind of tasks
     "cola": ("sentence", None),
-    "mnli": ("premise", "hypothesis"),
+
+    # entailment kind of tasks
     "mrpc": ("sentence1", "sentence2"),
-    "qnli": ("question", "sentence"),
-    "qqp": ("question1", "question2"),
-    "rte": ("premise", "hypothesis"),
-    "sst2": ("sentence", None),
     "stsb": ("sentence1", "sentence2"),
     "wnli": ("sentence1", "sentence2"),
+    "axb": ("sentence1", "sentence2"),
+
+    # QA kind of tasks
     "boolq": ("passage", "question"),
-    "cb": ("premise", "hypothesis"),
-    "copa": ("premise", "choice1"),
     "multirc": ("paragraph", "question"),
+
+    # NLI kind of tasks
+    "mnli": ("premise", "hypothesis"),
+    "rte": ("premise", "hypothesis"),
+    "axg": ("premise", "hypothesis"),
+    "cb": ("premise", "hypothesis"),
+    "qnli": ("question", "sentence"),
+    "copa": ("premise", "question", "choice1", "choice2"),
+
+    # others
+    "qqp": ("question1", "question2"),
+    "sst2": ("sentence", None),
+
 }
 
 
@@ -111,4 +123,27 @@ clf_label_names_mapping = {
         "entailment",
         "not_entailment"
     ],
+}
+
+clf_task_description_mapping = {
+    #"cola": ,
+    #"mnli": ,
+    #"mrpc": ,
+    #"qnli": ,
+    #"qqp": ,
+    "rte": "Given a premise, identify if the hypothesis entails premise or not.",
+    #"sst2": ,
+    #"stsb": ,
+    #"ax": ,
+    #"wnli": ,
+    "boolq": "Given a passage and a yes/no question, identify if the answer is \"yes\" or \"no\".",
+    "cb": "Given a premise, identify if the hypothesis entails, contradicts or is neutral to the premise.",
+    "copa": "Given a premise, a question (cause/effect) and two alternative choices, identify plausible answer from the alternative choices.",
+    #"multirc": ,
+    #"record":,
+    #"wic": ,
+    #"wsc": ,
+    #"wsc.fixed": ,
+    #"axb": ,
+    #"axg": ,
 }

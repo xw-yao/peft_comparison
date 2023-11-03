@@ -10,11 +10,11 @@ for adapter_config_string in \
     "pfeiffer" "houlsby" "scaled_parallel"
     #"compacter" "compacter++" "lora" "ia3"
     #"unipelt" "prefix_tuning" "prefix_tuning_flat" "mam"
-    #"ln_tuning" "full_tuning" 
+    #"ln_tuning" "full_tuning"
 do
 
 for dataset_config_name in \
-    "cb" "copa" "rte" "boolq" 
+    "copa" "rte" "boolq" "cb"
 do
 
     export experiment_name="${model}_${dataset_name}_${dataset_config_name}_${adapter_config_string}"
@@ -45,6 +45,7 @@ do
             --learning_rate $lr \
             --num_train_epochs 3 \
             --wandb_project "PEFT_comparison_v2" \
+            --tags "updated llama prompt" \
 
 done
 done

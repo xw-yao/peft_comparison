@@ -3,19 +3,20 @@ from functools import partial
 
 import nltk
 import torch
+from datasets import DatasetDict, Dataset
 
 from peft_comparison.mappings import (
     summarization_name_mapping,
     clf_label_names_mapping,
     task_to_keys,
+    clf_task_description_mapping,
 )
 
 
 # Preprocessing functions
-
 def dataset_to_text2text(dataset, task_type, dataset_name, decoder_only=False):
     """Takes a dataset dict and returns a dataset with fields source_text target_text and a postprocessing function
-    
+
     If task_type is summarization, just renames the columns
     If task_type is classification, applies `preprocess_glue_one_example` to convert
     classification to text generation
@@ -46,11 +47,10 @@ def dataset_to_text2text(dataset, task_type, dataset_name, decoder_only=False):
 
     if dataset_name not in clf_label_names_mapping:
         raise ValueError(f"Unknown dataset name: {dataset_name}. Note that for classification, dataset_name must be a glue/superglue task name (e.g., 'cola')")
-
     dataset = dataset.map(
         preprocess_glue_one_example,
         batched=False,
-        fn_kwargs={"task_name": dataset_name, "label_names": clf_label_names_mapping[dataset_name], "decoder_only": decoder_only}
+        fn_kwargs={"task_name": dataset_name, "decoder_only": decoder_only},
     )
 
     if isinstance(dataset, dict):
@@ -60,14 +60,14 @@ def dataset_to_text2text(dataset, task_type, dataset_name, decoder_only=False):
     else:
         assert "source_text" in dataset.column_names
         assert "target_text" in dataset.column_names
-    
+
     postprocess_fn = partial(postprocess_classification, dataset_config_name=dataset_name)
 
     return dataset, postprocess_fn
 
 
 
-def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, id_key="idx", decoder_only=False):
+def preprocess_glue_one_example(x, task_name, id_key="idx", decoder_only=False):
     """
 
     CODE SOURCE: https://github.com/google-research/text-to-text-transfer-transformer/blob/24d9d3b89b129e586bbfe35cffbc5926d88adc5e/t5/data/preprocessors.py#L734C1-L812C12
@@ -110,23 +110,20 @@ def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, i
     Returns:
     A preprocessed example.
     """
-    input_text = f"{task_name} "
-
     feature_names = task_to_keys[task_name]
+    label_names = clf_label_names_mapping[task_name]
+    input_text = f"{task_name} "
     for feature_name in feature_names:
         if feature_name is None: continue
         input_text += f"{feature_name}: {x[feature_name]} "
 
     # label name
-    import ipdb
-    ipdb.set_trace()
     if x["label"] == -1:
         label_name = "<unk>"
     else:
         label_name = label_names[x["label"]]
 
     ex = {}
-
     if task_name == "multirc":
         # Remove HTML markup.
         input_text = re.sub(r"<br>", " ", input_text)
@@ -143,6 +140,11 @@ def preprocess_glue_one_example(x, task_name, label_names, feature_names=None, i
 
     ex["source_text"] = input_text.strip()
     ex["target_text"] = label_name
+    if decoder_only:
+        input_text = input_text.strip().replace(task_name, "")
+        possible_answers = ",".join(clf_label_names_mapping[task_name])
+        input_text = clf_task_description_mapping[task_name] + " " + input_text + " " + f"Select answer from: {possible_answers}. Answer:"
+        ex["source_text"] = input_text
 
     return ex
 
@@ -183,8 +185,8 @@ def strip_input_tokens_from_generation(generated_tokens, len_input_wo_class, pad
 
 def string_label_to_class_id(string_label, label_classes, default=-1):
     """Returns index of string_label in label_classes or default if not found."""
-
-    # @TODO: I feel like this is quite stringent. Not changing it because I want to keep it 
+    # source: https://github.com/google-research/text-to-text-transfer-transformer/blob/main/t5/data/postprocessors.py#L41
+    # @TODO: I feel like this is quite stringent. Not changing it because I want to keep it
     # same for t5 and Llama
 
     if string_label in label_classes:
