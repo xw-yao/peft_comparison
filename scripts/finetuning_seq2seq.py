@@ -43,7 +43,6 @@ from transformers import (
     SchedulerType,
     get_scheduler,
     set_seed,
-    DataCollatorForLanguageModeling,
 )
 
 from accelerate import Accelerator
@@ -274,11 +273,20 @@ def get_model(args, device):
         NotImplementedError("Attention tuning is not implmented yet")
 
     elif args.adapter_config_string == "full_tuning":
+        if args.load_in_8bit or args.load_in_4bit:
+            logger.error(f"Full tuning is not supported for 8bit or 4bit models, ignoring the flag")
+
         model_class = AutoModelForCausalLM if "llama" in args.model_name_or_path.lower() else AutoModelForSeq2SeqLM
+        device_map = {"": device}
+        if any([x in args.model_name_or_path.lower() for x in ["11b", "7b", "70b"]]):
+            # we want to use DeepSpeed Stage 3 in this case and device_map doesn't work for us
+            device_map = None
+
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": device},
+            use_flash_attention_2="llama" in args.model_name_or_path.lower(),
+            device_map=device_map,
         )
 
     # send to device if not quantized
@@ -295,7 +303,7 @@ def get_model(args, device):
     # on a small vocab and want a smaller embedding size, remove this test.
     if model.config.decoder_start_token_id is None:
         model.config.decoder_start_token_id = tokenizer.bos_token_id
-        #raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+
     if tokenizer.pad_token is None:
         set_pad_to = tokenizer.eos_token
         tokenizer.add_special_tokens({'pad_token': set_pad_to})
@@ -424,16 +432,11 @@ def main():
     args = parse_args()
 
     # some global variables that we will use
-    if "WORLD_SIZE" not in os.environ:
-        logger.warning("WORLD_SIZE not in os.environ, setting to 1")
-
-    world_size = int(os.environ.get("WORLD_SIZE", 1))
     device = torch.cuda.current_device()
 
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
-    #args.output_dir = args.output_dir.replace(args.model_name_or_path, args.model_name_or_path.replace("/", "-"))
     accelerator = Accelerator(project_dir=args.output_dir, log_with="wandb")
     if not accelerator.is_main_process:
         logger.remove()
@@ -502,6 +505,7 @@ def main():
         inputs = [args.source_prefix + inp for inp in inputs]
 
         if not decoder_only:
+            # T5
             model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
             labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
             if padding == "max_length":
@@ -728,14 +732,14 @@ def main():
 
     tokens_seen = 0
     tokens_seen_before = 0
-    batches_in_update = args.gradient_accumulation_steps * world_size
+    batches_in_update = args.gradient_accumulation_steps * accelerator.num_processes
     for epoch in range(starting_epoch, args.num_train_epochs):
         logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
         for batch_idx, batch in enumerate(active_dataloader):
             # vars for calculating throughput
             batch_start_time = time.time()
-            tokens_seen += batch["input_ids"].numel() * world_size
+            tokens_seen += batch["input_ids"].numel() * accelerator.num_processes
 
             # print first batch
             if batch_idx == 0 and epoch == 0:
@@ -818,8 +822,7 @@ def main():
                 accelerator.log(result, step=update_step)
 
     # final evaluation
-    # @NOTE: commenting the following if condition because we want to do atleast one evaluation with beam search
-    #if (update_step + 1) % args.eval_every_steps != 0:
+    # @NOTE: we want to do atleast one evaluation with beam search
     logger.info(f"Final evaluation (step={update_step})")
     result = evaluate_model(
         model=model,
