@@ -800,6 +800,8 @@ def main():
             )
 
             if (update_step + 1) % args.eval_every_steps == 0:
+                # @TODO: decide what max_length to use for decoder_only model
+                # if model is continuing generation after the input_ids then we should only use a small max_target_length as max_length
                 logger.info(f"Evaluating model at step {update_step}")
                 result = evaluate_model(
                     model=model,
