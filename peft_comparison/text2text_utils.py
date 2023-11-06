@@ -140,8 +140,14 @@ def preprocess_glue_one_example(x, task_name, id_key="idx", decoder_only=False):
     ex["source_text"] = input_text.strip()
     ex["target_text"] = label_name
     if decoder_only:
+
+        # @TODO:
+        # 1. evaluation needs padding on left and hence, we need to be consistent with how we pad in training and evaluating
+        # 2. we should not have any token after "Answer:", so no padding on right
+
+
         input_text = input_text.strip().replace(task_name, "")
-        possible_answers = ",".join(clf_label_names_mapping[task_name])
+        possible_answers = ", ".join(clf_label_names_mapping[task_name])
         input_text = clf_task_description_mapping[task_name] + " " + input_text + " " + f"Select answer from: {possible_answers}. Answer:"
         ex["source_text"] = input_text
 

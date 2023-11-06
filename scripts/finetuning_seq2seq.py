@@ -335,6 +335,7 @@ def evaluate_model(
     dataloader,
     accelerator,
     postprocess_fn,
+    target_length,
     max_length=None,
     num_beams=None,
     max_iters=None,
@@ -371,7 +372,9 @@ def evaluate_model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             max_length=max_length,
+            max_new_tokens=target_length,
             num_beams=num_beams,
+            do_sample=False,
         )
         update_time = time.time() - batch_start_time
         batch_start_time = time.time()
@@ -806,7 +809,8 @@ def main():
             if (update_step + 1) % args.eval_every_steps == 0:
                 # @TODO: decide what max_length to use for decoder_only model
                 # if model is continuing generation after the input_ids then we should only use a small max_target_length as max_length
-                logger.info(f"Evaluating model at step {update_step}")
+                logger.info(f"Evaluating model at update step {update_step}")
+                logger.info(f"Evaluating model at global step {global_step}")
                 result = evaluate_model(
                     model=model,
                     metric=metric,
@@ -821,6 +825,7 @@ def main():
                 )
                 accelerator.log(result, step=update_step)
 
+
     # final evaluation
     # @NOTE: we want to do atleast one evaluation with beam search
     logger.info(f"Final evaluation (step={update_step})")
@@ -831,6 +836,7 @@ def main():
         dataloader=eval_dataloader,
         accelerator=accelerator,
         max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
+        target_length=args.val_max_target_length,
         num_beams=args.num_beams,
         max_iters=None,
         postprocess_fn=postprocess_fn,
