@@ -128,7 +128,7 @@ def parse_args():
     parser.add_argument("--torch_dtype", type=torch.dtype, default=torch.bfloat16, help="This sets the dtype of the remaining non quantized layers. 'bitsandbytes' library suggests to set the value to 'torch.float16' for 8 bit model and use the same dtype as the compute dtype for 4 bit model")
 
     # Weight and Biases Configuration
-    parser.add_argument("--wandb_project", type=str, default="PEFT_comparison_v2", help="Name to be given to Weight and Biases logging repository")
+    parser.add_argument("--wandb_project", type=str, default="PEFT_Comparison", help="Name to be given to Weight and Biases logging repository")
     parser.add_argument("--tags", type=str, default=None, help="Tags to be given to individual runs in WandB repository, e.g. 'trial, t5-base, classification'")
     parser.add_argument("--wandb_name", type=str, default=None, help="Display name for the run")
 
@@ -473,6 +473,7 @@ def main():
             "tags": args.tags,
             "entity": "text_machine_lab_babylm",
         }})
+
     if accelerator.is_main_process:
         wandb.save(os.path.abspath(__file__), policy="now") # save current script
 
