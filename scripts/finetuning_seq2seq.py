@@ -109,7 +109,7 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=1, help="Total number of training epochs to perform.")
     parser.add_argument("--max_train_steps", type=int, default=None, help="Total number of training steps to perform. If provided, overrides num_train_epochs.")
-    parser.add_argument("--min_train_steps", type=int, default=0)
+    parser.add_argument("--min_train_steps", type=int, default=100)
     parser.add_argument("--eval_every_steps", type=int, default=None, help="Evaluate model after these many steps.")
     parser.add_argument("--lr_scheduler_type", type=SchedulerType, default="linear", help="The scheduler type to use, choices: linear, cosine, cosine_with_restarts, polynomial, constant, constant_with_warmup")
     parser.add_argument("--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler.")
