@@ -28,12 +28,13 @@ class PrefixTuning(nn.Module, ModuleUtilsMixin):
         self.input_size = input_size
         self.n_embd_per_head = self.input_size // self.n_heads
         self.config = config
+        self.kv_size = self.config.kv_size or self.input_size
 
         self.wte = nn.Embedding(self.config.prefix_length, self.input_size)
         self.control_trans = nn.Sequential(
             nn.Linear(self.input_size, self.config.bottleneck_size),
             Activation_Function_Class(self.config.non_linearity.lower()),
-            nn.Linear(self.config.bottleneck_size, self.n_layers * 2 * self.input_size),
+            nn.Linear(self.config.bottleneck_size, self.n_layers * 2 * self.kv_size),
         )
         self.dropout = nn.Dropout(self.config.dropout)
 

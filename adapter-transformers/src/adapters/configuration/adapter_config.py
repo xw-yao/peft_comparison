@@ -393,6 +393,8 @@ class PrefixTuningConfig(AdapterConfigBase):
     dropout: float = 0.0
     use_gating: bool = False
     shared_gating: bool = True
+    # This allows using this config for T5-3B and T5-11B where the value size != hidden_size / num_heads
+    kv_size: Optional[int] = None  # Added for peft_comparison
 
 
 @dataclass(eq=False)

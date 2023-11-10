@@ -53,7 +53,8 @@ import wandb
 from tqdm.auto import tqdm, trange
 from loguru import logger
 
-from adapters.models.llama.adapter_model import LlamaAdapterModel
+from adapters import LlamaAdapterModel, T5AdapterModel
+
 import peft_comparison
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
@@ -108,6 +109,7 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=1, help="Total number of training epochs to perform.")
     parser.add_argument("--max_train_steps", type=int, default=None, help="Total number of training steps to perform. If provided, overrides num_train_epochs.")
+    parser.add_argument("--min_train_steps", type=int, default=0)
     parser.add_argument("--eval_every_steps", type=int, default=None, help="Evaluate model after these many steps.")
     parser.add_argument("--lr_scheduler_type", type=SchedulerType, default="linear", help="The scheduler type to use, choices: linear, cosine, cosine_with_restarts, polynomial, constant, constant_with_warmup")
     parser.add_argument("--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler.")
@@ -115,7 +117,6 @@ def parse_args():
     # Output and Tracking
     parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
-    parser.add_argument("--checkpointing_steps", type=str, default=None, help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="If the training should continue from a checkpoint folder.")
 
     # PEFT Configuration
@@ -132,7 +133,8 @@ def parse_args():
     parser.add_argument("--wandb_name", type=str, default=None, help="Display name for the run")
 
     # Misc
-    parser.add_argument("--verbocity", type=int, default=1, help="Verbocity of the logger (1 or 2 for now)")
+    parser.add_argument("--verbosity", type=int, default=1, help="verbosity of the logger (1 or 2 for now)")
+    parser.add_argument("--profile", action="store_true", help="Enable profiler and log profile traces to pytorch_tensorboard")
     args = parser.parse_args()
 
     # Sanity checks
@@ -167,29 +169,45 @@ def parse_args():
 
     return args
 
-def load_llama_with_adapters_and_lm_head(
-        model_class,
+
+def load_model_with_adapters_and_lm_head(
+        *,
+        hf_model_class,
+        adapters_model_class,
         model_name_or_path,
-        load_in_4bit,
+        load_in_4bit=False,
+        load_in_8bit=False,
+        torch_dtype=None,
     ):
     """
     This function requires Adapters branch of the Adapter-hub library:
     https://github.com/adapter-hub/adapter-transformers/tree/adapters
 
     """
-
     # @NOTE: we are using torch.float32 to overcome the compatibility issues with the new Adapters library
+    # Currently testing if bf16 would work
+    torch_dtype = torch_dtype or torch.float32
+    constructor_kwargs = {
+        "torch_dtype": torch_dtype,
+        "load_in_4bit": load_in_4bit,
+        "load_in_8bit": load_in_8bit,
+    }
 
     # first we load the reference model from huggingface
-    model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
+    model_ref = hf_model_class.from_pretrained(model_name_or_path, **constructor_kwargs)
     lm_head_parameters = model_ref.lm_head.weight
     del model_ref
     torch.cuda.empty_cache()
 
     # load the Adapters version of the Llama model
     logger.info(f"Loading in 4-bit: {load_in_4bit}")
-    model = model_class.from_pretrained(model_name_or_path, load_in_4bit=load_in_4bit, torch_dtype=torch.float32)
-    model.add_causal_lm_head("lm_head")
+    model = adapters_model_class.from_pretrained(model_name_or_path, **constructor_kwargs)
+
+    if hasattr(model, "add_seq2seq_lm_head"):
+        model.add_seq2seq_lm_head("lm_head")
+    else:
+        model.add_causal_lm_head("lm_head")
+
     model.heads.lm_head[0].weight = lm_head_parameters
 
     return model
@@ -207,29 +225,22 @@ def get_model(args, device):
 
     # model
     model_class = AutoModelForSeq2SeqLM
+    adapters_model_class = T5AdapterModel
     if "llama" in args.model_name_or_path.lower():
-        #raise NotImplementedError("TODO: support llama in data collation and preprocessing and evluation")
         logger.info("Using LLaMA model")
-        model_class = LlamaAdapterModel
+        model_class = AutoModelForCausalLM
+        adapters_model_class = LlamaAdapterModel
 
     # add peft modules
     if not args.adapter_config_string in ["bitfit", "ln_tuning", "attn_tuning", "full_tuning"]:
-
-        # load model
-        if "t5" in args.model_name_or_path:
-            model = model_class.from_pretrained(
-                args.model_name_or_path,
-                torch_dtype=args.torch_dtype,
-                device_map={"": device},
-                load_in_8bit=args.load_in_8bit,
-            )
-
-        else:
-            model = load_llama_with_adapters_and_lm_head(
-                model_class=model_class,
-                model_name_or_path=args.model_name_or_path,
-                load_in_4bit=args.load_in_4bit,
-            )
+        model = load_model_with_adapters_and_lm_head(
+            hf_model_class=model_class,
+            adapters_model_class=adapters_model_class,
+            model_name_or_path=args.model_name_or_path,
+            load_in_4bit=args.load_in_4bit,
+            load_in_8bit=args.load_in_8bit,
+            torch_dtype=args.torch_dtype,
+        )
 
         # freeze all parameters
         for param in model.parameters():
@@ -242,12 +253,13 @@ def get_model(args, device):
         for name, module in model.named_modules():
             if "adapter" in name:
                 module.to(device)
+                for param in module.parameters():
+                    param.requires_grad = True
 
     elif args.adapter_config_string == "bitfit":
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": device},
         )
 
         # freeze all but bias parameters
@@ -256,10 +268,9 @@ def get_model(args, device):
                 param.requires_grad = False
 
     elif args.adapter_config_string == "ln_tuning":
-        model = AutoModelForCausalLM.from_pretrained(
+        model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            device_map={"": device},
         )
 
         # freeze all but LN parameters
@@ -277,16 +288,10 @@ def get_model(args, device):
             logger.error(f"Full tuning is not supported for 8bit or 4bit models, ignoring the flag")
 
         model_class = AutoModelForCausalLM if "llama" in args.model_name_or_path.lower() else AutoModelForSeq2SeqLM
-        device_map = {"": device}
-        if any([x in args.model_name_or_path.lower() for x in ["11b", "7b", "70b"]]):
-            # we want to use DeepSpeed Stage 3 in this case and device_map doesn't work for us
-            device_map = None
-
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
             use_flash_attention_2="llama" in args.model_name_or_path.lower(),
-            device_map=device_map,
         )
 
     # send to device if not quantized
@@ -312,8 +317,7 @@ def get_model(args, device):
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
 
-    if args.verbocity > 1:
-        logger.info(model)
+    logger.info(model)
 
     dtype_counts = {}
     for p in model.parameters():
@@ -434,6 +438,9 @@ def evaluate_model(
 def main():
     args = parse_args()
 
+    if args.seed is not None:
+        set_seed(args.seed)
+
     # some global variables that we will use
     device = torch.cuda.current_device()
 
@@ -454,9 +461,6 @@ def main():
         logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
     else:
         args.total_batch_size = args.gradient_accumulation_steps * args.per_device_train_batch_size * accelerator.num_processes
-
-    if args.seed is not None:
-        set_seed(args.seed)
 
     if accelerator.is_main_process and args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
@@ -572,7 +576,7 @@ def main():
         args.max_eval_steps_durig_validation = None
 
     # Log a few random samples from the training set:
-    if args.verbocity > 1:
+    if args.verbosity > 1:
         for index in random.sample(range(len(train_dataset)), 1):
             logger.info(f"Sample {index} of the training set:")
             for k, v in train_dataset[index].items():
@@ -620,7 +624,7 @@ def main():
     args.trainable_parameters = trainable_parameters
     logger.info(f"Total model parameters: {total_parameters:,}")
     logger.info(f"Trainable parameters  : {trainable_parameters:,} ({trainable_parameters / total_parameters * 100:.4f}%)")
-    if args.verbocity > 1:
+    if args.verbosity > 1:
         logger.info("Trainable model parameters")
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -633,6 +637,14 @@ def main():
     if args.max_train_steps is None:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
         overrode_max_train_steps = True
+
+    if args.max_train_steps < args.min_train_steps:
+        args.max_train_steps = args.min_train_steps
+        args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+        overrode_max_train_steps = True
+        logger.warning(f"Overriding `max_train_steps` to {args.min_train_steps} "
+                       f"and `args.num_train_epochs` to {args.num_train_epochs} "
+                       f"to meet `min_train_steps` requirement.")
 
     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
@@ -657,11 +669,6 @@ def main():
 
     # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
-
-    # Figure out how many steps we should save the Accelerator states
-    checkpointing_steps = args.checkpointing_steps
-    if checkpointing_steps is not None and checkpointing_steps.isdigit():
-        checkpointing_steps = int(checkpointing_steps)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
@@ -740,23 +747,42 @@ def main():
     tokens_seen = 0
     tokens_seen_before = 0
     batches_in_update = args.gradient_accumulation_steps * accelerator.num_processes
+
+    prof = None
+    if args.profile:
+        prof = torch.profiler.profile(
+                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler('./profiler_logs'),
+                record_shapes=True,
+                with_stack=True)
+
     for epoch in range(starting_epoch, args.num_train_epochs):
         logger.info(f"Starting epoch {epoch + 1} / {args.num_train_epochs}")
         model.train()
+
+        if prof is not None: prof.start()
         for batch_idx, batch in enumerate(active_dataloader):
+            if prof is not None: prof.step()
             # vars for calculating throughput
             batch_start_time = time.time()
             tokens_seen += batch["input_ids"].numel() * accelerator.num_processes
 
             # print first batch
             if batch_idx == 0 and epoch == 0:
-
                 logger.info("============= CHECKING FIRST BATCH =============")
                 logger.info("Tensor shapes: ")
                 logger.info(batch["input_ids"].shape)
                 logger.info("Decoded text of first example in the batch:")
-                s_text = tokenizer.batch_decode(batch["input_ids"][0, :].unsqueeze(0), skip_special_tokens=False)
-                logger.info(f"Source text: {s_text}")
+                s_text = tokenizer.decode(batch["input_ids"][0, :], skip_special_tokens=False)
+                logger.info(f"input_ids text: {s_text}")
+                if "decoder_input_ids" in batch:
+                    t_text = tokenizer.decode(batch["decoder_input_ids"][0, :], skip_special_tokens=False)
+                    logger.info(f"decoder_input_ids text: {t_text}")
+
+                t_ids = batch["labels"][0, :]
+                t_ids[t_ids == -100] = tokenizer.pad_token_id
+                t_text = tokenizer.decode(t_ids, skip_special_tokens=False)
+                logger.info(f"Labels text: {t_text}")
 
             global_step += 1
             outputs = model(**batch)
@@ -826,7 +852,6 @@ def main():
                     decoder_only=args.decoder_only
                 )
                 accelerator.log(result, step=update_step)
-
 
     # final evaluation
     # @NOTE: we want to do atleast one evaluation with beam search

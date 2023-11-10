@@ -45,6 +45,7 @@ setup(
         "loguru",
         "nltk",
         "deepspeed",
+        "ipdb",
     ],
     extras_require=extras,
     classifiers=[
