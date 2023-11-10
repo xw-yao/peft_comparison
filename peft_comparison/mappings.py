@@ -1,3 +1,7 @@
+# @TODO: we might need to create a separate mapping for Llama
+# - if may be beneficial to change "choice1" and "choice2" to "A" and "B"
+
+
 summarization_name_mapping = {
     "amazon_reviews_multi": ("review_body", "review_title"),
     "big_patent": ("description", "abstract"),
