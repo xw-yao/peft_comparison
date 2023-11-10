@@ -476,6 +476,10 @@ def main():
     model, tokenizer = get_model(args, device=device)
     torch.cuda.reset_peak_memory_stats()
 
+    # we need to add padding token to llama
+    if args.decoder_only:
+        tokenizer.add_special_tokens({'pad_token': tokenizer.bos_token})
+
     ############################################
     # Data preprocessing
     raw_datasets = load_dataset(args.dataset_name, args.dataset_config_name)
@@ -807,10 +811,7 @@ def main():
             )
 
             if (update_step + 1) % args.eval_every_steps == 0:
-                # @TODO: decide what max_length to use for decoder_only model
-                # if model is continuing generation after the input_ids then we should only use a small max_target_length as max_length
-                logger.info(f"Evaluating model at update step {update_step}")
-                logger.info(f"Evaluating model at global step {global_step}")
+                logger.info(f"Evaluating model at, update step: {update_step}, global step: {global_step}")
                 result = evaluate_model(
                     model=model,
                     metric=metric,
@@ -818,6 +819,7 @@ def main():
                     dataloader=eval_dataloader,
                     accelerator=accelerator,
                     max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
+                    target_length=args.val_max_target_length,
                     num_beams=1,
                     max_iters=args.max_eval_steps_durig_validation,
                     postprocess_fn=postprocess_fn,

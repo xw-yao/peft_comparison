@@ -4,6 +4,7 @@ from typing import Any, Optional, Union
 
 import numpy as np
 
+import torch
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.utils import PaddingStrategy
 
@@ -114,47 +115,50 @@ class DataCollatorForCausalLMWithMetadata:
     pad_to_multiple_of: Optional[int] = None
     label_pad_token_id: int = -100
     return_tensors: str = "pt"
+    padding_side: str = "left"
 
     def __call__(self, features):
         return_tensors = self.return_tensors
         labels = [feature["labels"] for feature in features] if "labels" in features[0].keys() else None
         # We have to pad the labels before calling `tokenizer.pad` as this method won't pad them and needs them of the
         # same length to return tensors.
-        if labels is not None:
-            max_label_length = max(len(l) for l in labels)
-            if self.pad_to_multiple_of is not None:
-                max_label_length = (
-                    (max_label_length + self.pad_to_multiple_of - 1)
-                    // self.pad_to_multiple_of
-                    * self.pad_to_multiple_of
-                )
+        max_label_length = max(len(l) for l in labels)
+        if self.pad_to_multiple_of is not None:
+            max_label_length = (
+                (max_label_length + self.pad_to_multiple_of - 1)
+                // self.pad_to_multiple_of
+                * self.pad_to_multiple_of
+            )
 
-            padding_side = self.tokenizer.padding_side
-            for feature in features:
-                remainder = [self.label_pad_token_id] * (max_label_length - len(feature["labels"]))
-                if isinstance(feature["labels"], list):
-                    feature["labels"] = (
-                        feature["labels"] + remainder if padding_side == "right" else remainder + feature["labels"]
-                    )
-                elif padding_side == "right":
-                    feature["labels"] = np.concatenate([feature["labels"], remainder]).astype(np.int64)
+        batch = {}
+        for feature in features:
+            for k, v in feature.items():
+                if k == "metadata": continue
+                if k not in batch:
+                    batch[k] = []
+
+                # fill the sequence upto the "max_label_length" with appropriate token_id (either eos or 0)
+                if k in ["input_ids"]:
+                    remainder = [self.tokenizer.pad_token_id] * (max_label_length - len(v))
+                elif k in ["labels"]:
+                    remainder = [self.label_pad_token_id] * (max_label_length - len(v))
+                elif k in ["attention_mask", "decoder_attention_mask"]:
+                    remainder = [0] * (max_label_length - len(v))
                 else:
-                    feature["labels"] = np.concatenate([remainder, feature["labels"]]).astype(np.int64)
+                    ValueError(f"Invalid key {k}")
 
-        non_str_features = [
-            {k: v for k, v in feature.items() if k != "metadata"} for feature in features
-        ]
-        non_str_features = self.tokenizer.pad(
-            non_str_features,
-            padding=self.padding,
-            max_length=self.max_length,
-            pad_to_multiple_of=self.pad_to_multiple_of,
-            return_tensors=return_tensors,
-        )
+                # padding: either to the right or left
+                if self.padding_side == "right":
+                    v = v + remainder
+                else:
+                    v = remainder + v
 
-        #
+                assert len(v) == max_label_length, f"len(v)={len(v)}, max_label_length={max_label_length}"
+                batch[k].append(v)
+
+        # convert values to torch tensors
+        batch = {k: torch.LongTensor(v) for k, v in batch.items()}
         if "metadata" in features[0].keys():
-            non_str_features["metadata"] = [feature["metadata"] for feature in features]
-        features = non_str_features
+            batch["metadata"] = [feature["metadata"] for feature in features]
 
-        return features
+        return batch
