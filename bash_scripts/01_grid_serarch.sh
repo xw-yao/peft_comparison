@@ -25,9 +25,8 @@ for dataset_config_name in "rte" "copa" "boolq"; do
                     --dataset_name $dataset_name \
                     --dataset_config_name $dataset_config_name \
                     --model_name_or_path $model \
-                    --load_in_4bit \
                     --adapter_config_string $adapter_config_string \
-                    --per_device_train_batch_size 4 \
+                    --per_device_train_batch_size 32 \
                     --total_batch_size 32 \
                     --max_source_length 512 \
                     --max_target_length 8 \
