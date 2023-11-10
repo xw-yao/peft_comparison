@@ -4,7 +4,6 @@ export model="t5-large"
 export dataset_name="super_glue"
 export adapter_config_string="ln_tuning"
 
-# Arrays for learning rates and weight decays
 learning_rates=(1e-3 1e-4 5e-5)
 weight_decays=(0 0.1)
 
@@ -21,7 +20,6 @@ for dataset_config_name in "rte" "copa" "boolq"; do
 
             echo "Starting experiment $experiment_name with LR: $lr, Weight Decay: $weight_decay"
 
-            # python -m accelerate.commands.launch --num_processes=2 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
             python scripts/finetuning_seq2seq.py \
                     --output_dir "results/$experiment_name"\
                     --dataset_name $dataset_name \
@@ -35,7 +33,7 @@ for dataset_config_name in "rte" "copa" "boolq"; do
                     --max_target_length 8 \
                     --num_beams 5 \
                     --learning_rate $lr \
-                    --weight_decay $weight_decay \  # Added weight decay parameter
+                    --weight_decay $weight_decay \
                     --num_train_epochs 3 \
                     --min_train_steps 100 \
                     --wandb_project "PEFT_comparison_v2" \
