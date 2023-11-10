@@ -467,7 +467,12 @@ def main():
 
     accelerator.wait_for_everyone()
 
-    accelerator.init_trackers(args.wandb_project, init_kwargs={"wandb": {"tags": args.tags}})
+    accelerator.init_trackers(
+        args.wandb_project,
+        init_kwargs={"wandb": {
+            "tags": args.tags,
+            "entity": "text_machine_lab_babylm",
+        }})
     if accelerator.is_main_process:
         wandb.save(os.path.abspath(__file__), policy="now") # save current script
 
