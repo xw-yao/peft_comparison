@@ -1,8 +1,8 @@
 set -e
 
-export model="t5-large"
+export model="t5-3b"
 export dataset_name="super_glue"
-export adapter_config_string="ln_tuning"
+export adapter_config_string="houlsby"
 
 learning_rates=(1e-3 1e-4 5e-5)
 weight_decays=(0 0.1)
@@ -26,7 +26,7 @@ for dataset_config_name in "rte" "copa" "boolq"; do
                     --dataset_config_name $dataset_config_name \
                     --model_name_or_path $model \
                     --adapter_config_string $adapter_config_string \
-                    --per_device_train_batch_size 32 \
+                    --per_device_train_batch_size 8 \
                     --total_batch_size 32 \
                     --max_source_length 512 \
                     --max_target_length 8 \
@@ -35,7 +35,6 @@ for dataset_config_name in "rte" "copa" "boolq"; do
                     --weight_decay $weight_decay \
                     --num_train_epochs 3 \
                     --min_train_steps 100 \
-                    --wandb_project "PEFT_comparison_v2" \
                     --tags "grid_search" \
 
         done
