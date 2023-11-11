@@ -886,8 +886,9 @@ def main():
         if not isinstance(v, (float, int, bool, str, list)):
             all_results["args"][k] = str(v)
 
-    with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-        json.dump(all_results, f, indent=4)
+    if args.output_dir is not None:
+        with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
+            json.dump(all_results, f, indent=4)
 
     logger.info("Script successfully finished!")
 
