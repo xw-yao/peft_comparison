@@ -73,7 +73,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a summarization task")
 
     # Dataset Configuration
-    parser.add_argument("--dataset_name", type=str, default="cnn_dailymail", help="The name of the dataset to use via the datasets library.")
+    parser.add_argument("--dataset_name", type=str, required=True, help="The name of the dataset to use via the datasets library.")
     parser.add_argument("--task_type", default=None, choices=["summarization", "classification"])
     parser.add_argument("--dataset_config_name", default=None, help="""
                         The configuration name of the dataset to use via the datasets library
