@@ -441,16 +441,16 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
 
-    # some global variables that we will use
-    device = torch.cuda.current_device()
-    args.device = device
-
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
     accelerator = Accelerator(project_dir=args.output_dir, log_with="wandb")
     if not accelerator.is_main_process:
         logger.remove()
+
+    # It's important to get ths after the accelerator initialization
+    device = torch.cuda.current_device()
+    args.device = device
 
     if args.total_batch_size is not None:
         if args.gradient_accumulation_steps is not None:
