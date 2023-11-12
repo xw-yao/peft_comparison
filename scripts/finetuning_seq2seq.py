@@ -167,6 +167,9 @@ def parse_args():
 
     args.decoder_only = False if "t5" in args.model_name_or_path else True
 
+    if args.output_dir == "None":  # I am not sure why this happens
+        args.output_dir = None
+
     return args
 
 
