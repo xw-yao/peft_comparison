@@ -458,6 +458,7 @@ def main():
         if args.total_batch_size % (accelerator.num_processes * args.per_device_train_batch_size) != 0:
             raise ValueError(f"`--total_batch_size` ({args.total_batch_size}) is not divisible by "
                              f"num_processes * per_device_train_batch_size ({accelerator.num_processes} * {args.per_device_train_batch_size})")
+        logger.info(f"accelerator.num_processes: {accelerator.num_processes}")
         args.gradient_accumulation_steps = args.total_batch_size // (args.per_device_train_batch_size * accelerator.num_processes)
         logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps}.")
     else:
@@ -886,7 +887,8 @@ def main():
         if not isinstance(v, (float, int, bool, str, list)):
             all_results["args"][k] = str(v)
 
-    if args.output_dir is not None:
+    print(f"Saving results to {args.output_dir}, is None is {args.output_dir is None}, type is {type(args.output_dir)}")
+    if os.path.exists(args.output_dir):
         with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
             json.dump(all_results, f, indent=4)
 
