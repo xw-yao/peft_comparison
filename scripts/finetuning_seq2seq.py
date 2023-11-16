@@ -510,6 +510,13 @@ def main():
     if args.task_type == "classification":
         _dataset_name_for_preprocessing = args.dataset_config_name
 
+    if args.dataset_name in ["cnn_dailymail", "EdinburghNLP/xsum"]:
+        # 1600 is selected based on the MAM paper
+        # sample 1600 examples for validation and test deterministically
+        logger.warning(f"Subsampling the dataset to 1600 first examples for validation and test.")
+        raw_datasets["validation"] = raw_datasets["validation"].select(range(1600))
+        raw_datasets["test"] = raw_datasets["test"].select(range(1600))
+
     raw_datasets, postprocess_fn = peft_comparison.text2text_utils.dataset_to_text2text(
         raw_datasets,
         task_type=args.task_type,

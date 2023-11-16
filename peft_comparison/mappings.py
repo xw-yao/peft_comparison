@@ -13,6 +13,7 @@ summarization_name_mapping = {
     "thaisum": ("body", "summary"),
     "xglue": ("news_body", "news_title"),
     "xsum": ("document", "summary"),
+    "EdinburghNLP/xsum": ("document", "summary"),
     "wiki_summary": ("article", "highlights"),
 }
 
