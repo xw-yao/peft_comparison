@@ -1,0 +1,39 @@
+method: grid
+metric:
+  goal: maximize
+  name: eval/accuracy
+parameters:
+  adapter_config_string:
+    value: houlsby
+  dataset_name:
+    value: super_glue
+  dataset_config_name:
+    value: boolq
+  learning_rate:
+    value: 0.001
+  weight_decay:
+    value: 0.1
+  seed:
+    values:
+      - 0
+      - 1
+      - 42
+  max_source_length:
+    value: 512
+  max_target_length:
+    value: 8
+  min_train_steps:
+    value: 100
+  model_name_or_path:
+    value: t5-3b
+  num_beams:
+    value: 5
+  num_train_epochs:
+    value: 3
+  per_device_train_batch_size:
+    value: 8
+  tags:
+    value: varying_seed
+  total_batch_size:
+    value: 32
+program: scripts/finetuning_seq2seq.py

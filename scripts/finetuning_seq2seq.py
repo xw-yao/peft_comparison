@@ -195,6 +195,9 @@ def load_model_with_adapters_and_lm_head(
         "load_in_4bit": load_in_4bit,
         "load_in_8bit": load_in_8bit,
     }
+    if "llama" in model_name_or_path.lower():
+        constructor_kwargs["use_flash_attention_2"] = True
+    logger.info(f"Loading model with kwargs {pformat(constructor_kwargs)}")
 
     # first we load the reference model from huggingface
     model_ref = hf_model_class.from_pretrained(model_name_or_path, **constructor_kwargs)
@@ -203,7 +206,6 @@ def load_model_with_adapters_and_lm_head(
     torch.cuda.empty_cache()
 
     # load the Adapters version of the Llama model
-    logger.info(f"Loading in 4-bit: {load_in_4bit}")
     model = adapters_model_class.from_pretrained(model_name_or_path, **constructor_kwargs)
 
     if hasattr(model, "add_seq2seq_lm_head"):
@@ -224,7 +226,10 @@ def get_model(args, device):
         )
 
     # tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name_or_path,
+        model_max_length=max(args.max_source_length, args.max_target_length) + 2,  # void the annoying warning messge, +2 is for bos and eos
+    )
 
     # model
     model_class = AutoModelForSeq2SeqLM
@@ -324,7 +329,12 @@ def get_model(args, device):
 
     dtype_counts = {}
     for p in model.parameters():
-        dtype_counts[p.dtype] = dtype_counts.get(p.dtype, 0) + p.numel()
+        dtype_counts[str(p.dtype)] = dtype_counts.get(str(p.dtype), 0) + p.numel()
+
+    if len(dtype_counts) == 0:
+        logger.warning("No parameters in the model?")
+
+    logger.info(dtype_counts)
 
     total_parameters = sum(dtype_counts.values())
     dtype_info = [f"{dtype}: {count} ({count / total_parameters * 100:.2f}%)" for dtype, count in dtype_counts.items()]
