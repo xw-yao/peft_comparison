@@ -39,3 +39,30 @@ python scripts/finetuning_seq2seq.py \
     --eval_every_steps 1000 \
     --source_prefix "summarize: "
 ```
+
+
+## All valid method names for `adaper_config_string`:
+
+```
+"full_tuning"
+"pfeiffer"
+"houlsby"
+"scaled_parallel"
+"compacter"
+"compacter++"
+"prefix_tuning"
+"prefix_tuning_flat"
+"lora"
+"ia3"
+"mam"
+"unipelt"
+"ln_tuning"
+"bitfit"  # not useful, because neither T5 nor LLaMA use biases
+```
+
+Not yet implemented, but expected:
+```
+"attn_tuning"
+"krona"
+"relora"
+```
