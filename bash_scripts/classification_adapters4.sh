@@ -40,10 +40,10 @@ do
             --per_device_train_batch_size 1 \
             --total_batch_size 32 \
             --max_source_length 512 \
-            --max_target_length 8 \
+            --max_target_length 4 \
             --num_beams 5 \
             --learning_rate $lr \
-            --num_train_epochs 3 \
+            --num_train_epochs 6 \
             --wandb_project "PEFT_comparison_v2" \
             --tags "updated llama prompt" \
 
