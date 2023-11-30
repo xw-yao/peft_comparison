@@ -775,6 +775,9 @@ def main():
     tokens_seen = 0
     tokens_seen_before = 0
     batches_in_update = args.gradient_accumulation_steps * accelerator.num_processes
+    main_metric_name = "eval/accuracy" if args.task_type == "classification" else "eval/rougeL"
+    best_metric_value = 0
+    best_results_dict = None
 
     prof = None
     if args.profile:
@@ -880,6 +883,10 @@ def main():
                     decoder_only=args.decoder_only
                 )
                 accelerator.log(result, step=update_step)
+                if result[main_metric_name] > best_metric_value:
+                    logger.info(f"New best metric found: {result[main_metric_name]} at update step {update_step}")
+                    best_metric_value = result[main_metric_name]
+                    best_results_dict = result.copy()
 
     # final evaluation
     # @NOTE: we want to do atleast one evaluation with beam search
@@ -897,11 +904,18 @@ def main():
         postprocess_fn=postprocess_fn,
         decoder_only=args.decoder_only
     )
+    if result[main_metric_name] > best_metric_value:
+        logger.info(f"New best metric found: {result[main_metric_name]} at update step {update_step}")
+        best_metric_value = result[main_metric_name]
+        best_results_dict = result.copy()
+
     logger.info(pformat(result))
     accelerator.log(result, step=update_step)
 
+    accelerator.log(best_results_dict, step=update_step + 1)
+
     # save results and all arguments
-    all_results = result.copy()
+    all_results = best_results_dict.copy()
     all_results["args"] = vars(args)
     for k, v in all_results["args"].items():
         if not isinstance(v, (float, int, bool, str, list)):
