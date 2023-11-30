@@ -14,7 +14,7 @@ echo "Starting experiment $experiment_name"
 python -m accelerate.commands.launch --main_process_port 1235 --num_processes=4 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
     scripts/finetuning_seq2seq.py \
         --output_dir "results/$experiment_name"\
-        --dataset_name "EdinburghNLP/xsum" \
+        --dataset_name "cnn_dailymail" \
         --dataset_config_name "3.0.0" \
         --preprocessing_num_workers 12 \
         --model_name_or_path $model \
