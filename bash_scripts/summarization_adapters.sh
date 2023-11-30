@@ -6,15 +6,15 @@ set -e
 
 export model="t5-3b"
 export adapter_config_string="houlsby"
-export learning_rate=1e-3
+export learning_rate=3e-3
 export weight_decay=0.1
 export seed=1
 export experiment_name="${model}_cnn_${adapter_config_string}_lr${learning_rate}_wd${weight_decay}_seed${seed}"
 echo "Starting experiment $experiment_name"
-python -m accelerate.commands.launch --main_process_port 1235 --num_processes=8 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
+python -m accelerate.commands.launch --main_process_port 1235 --num_processes=4 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
     scripts/finetuning_seq2seq.py \
         --output_dir "results/$experiment_name"\
-        --dataset_name "cnn_dailymail" \
+        --dataset_name "EdinburghNLP/xsum" \
         --dataset_config_name "3.0.0" \
         --preprocessing_num_workers 12 \
         --model_name_or_path $model \
