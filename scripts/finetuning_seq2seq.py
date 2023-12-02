@@ -173,6 +173,39 @@ def parse_args():
     return args
 
 
+def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config):
+    if "prefix_tuning" in adapter_config_string:
+        if "[" in adapter_config_string:
+            logger.info(f"Custom config string provided: {adapter_config_string}")
+            logger.info(f"Using the custom config string as is, if you get an error related to kv_size, please check the config string")
+            logger.info(f"It should contain kv_size for T5-3B and T5-11B")
+            return adapter_config_string
+
+        logger.info(f"Adding [kv_size={model_config.kv_size}] to the adapter config string")
+        adapter_config_string += "[kv_size=64]"
+        logger.info(f"Using adapter config string: {adapter_config_string}")
+        return adapter_config_string
+
+    if adapter_config_string == "unipelt":
+        logger.info("Building default unipelt config for T5. Non-default unipelt configuratoins need to be provided explicitly")
+        _lora = "lora[r=8,use_gating=True]"
+        _prefix = f"prefix_tuning[prefix_length=10,use_gating=True,kv_size={model_config.kv_size}]"
+        _adapter = "seq_bn[reduction_factor=16,use_gating=True]"
+        adapter_config_string = f"{_lora}|{_prefix}|{_adapter}"
+        logger.info(f"Using adapter config string: {adapter_config_string}")
+        return adapter_config_string
+
+    if adapter_config_string == "mam":
+        logger.info("Building default MAM config for T5. Non-default mam configuratoins need to be provided explicitly")
+        _prefix = f"prefix_tuning[bottleneck_size=800,kv_size={model_config.kv_size}]"
+        _adapter = "par_bn"
+        adapter_config_string = f"{_prefix}|{_adapter}"
+        logger.info(f"Using adapter config string: {adapter_config_string}")
+        return adapter_config_string
+
+    return adapter_config_string
+
+
 def load_model_with_adapters_and_lm_head(
         *,
         hf_model_class,
@@ -255,6 +288,13 @@ def get_model(args, device):
             param.requires_grad = False
 
         # add PEFT
+        if adapters_model_class is T5AdapterModel:
+            # T5-3B and T5-11B have a weird setup where key_size != hidden_size // num_heads
+            args.adapter_config_string = preprocess_adapter_config_string_for_t5(
+                adapter_config_string=args.adapter_config_string,
+                model_config=model.config,
+            )
+
         model.add_adapter("adapter", config=args.adapter_config_string, set_active=True)
         model.train()
         model.train_adapter("adapter")
@@ -318,8 +358,7 @@ def get_model(args, device):
         model.config.decoder_start_token_id = tokenizer.bos_token_id
 
     if tokenizer.pad_token is None:
-        set_pad_to = tokenizer.eos_token
-        tokenizer.add_special_tokens({'pad_token': set_pad_to})
+        tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
         model.config.pad_token_id = model.config.eos_token_id
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
