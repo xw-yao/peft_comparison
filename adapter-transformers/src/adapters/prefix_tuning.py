@@ -23,18 +23,18 @@ class PrefixTuning(nn.Module, ModuleUtilsMixin):
         config: PrefixTuningConfig,
     ):
         super().__init__()
+        self.config = config
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.input_size = input_size
-        self.n_embd_per_head = self.input_size // self.n_heads
-        self.config = config
-        self.kv_size = self.config.kv_size or self.input_size
+        self.n_embd_per_head = config.kv_size or self.input_size // self.n_heads
 
         self.wte = nn.Embedding(self.config.prefix_length, self.input_size)
+        _emb_size = self.n_embd_per_head * self.n_heads
         self.control_trans = nn.Sequential(
             nn.Linear(self.input_size, self.config.bottleneck_size),
             Activation_Function_Class(self.config.non_linearity.lower()),
-            nn.Linear(self.config.bottleneck_size, self.n_layers * 2 * self.kv_size),
+            nn.Linear(self.config.bottleneck_size, self.n_layers * 2 * _emb_size),
         )
         self.dropout = nn.Dropout(self.config.dropout)
 
@@ -73,13 +73,16 @@ class FlatPrefixTuning(nn.Module, ModuleUtilsMixin):
         config: PrefixTuningConfig,
     ):
         super().__init__()
+        self.config = config
         self.n_layers = n_layers
         self.n_heads = n_heads
         self.input_size = input_size
-        self.n_embd_per_head = self.input_size // self.n_heads
-        self.config = config
+        self.n_embd_per_head = config.kv_size or self.input_size // self.n_heads
 
-        self.control_trans = nn.Parameter(torch.randn(self.config.prefix_length * self.n_layers * 2 * self.input_size))
+        _emb_size = self.n_embd_per_head * self.n_heads
+        self.control_trans = nn.Parameter(
+            torch.randn(self.config.prefix_length * self.n_layers * 2 * _emb_size)
+        )
 
         self.dropout = nn.Dropout(self.config.dropout)
 
