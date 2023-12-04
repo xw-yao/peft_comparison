@@ -183,7 +183,7 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
             return adapter_config_string
 
         logger.info(f"Adding [kv_size={model_config.d_kv}] to the adapter config string")
-        adapter_config_string += "[kv_size=64]"
+        adapter_config_string += f"[kv_size={model_config.d_kv}]"
         logger.info(f"Using adapter config string: {adapter_config_string}")
         return adapter_config_string
 
