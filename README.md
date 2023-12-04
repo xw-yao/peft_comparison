@@ -22,22 +22,28 @@ huggingface-cli login
 
 ## Usage example
 
-```
-export experiment_name="t5_base_cnn_dailymail_pfeiffer_adapters"                                                                                                          
-# python -u -m accelerate.commands.launch --num_processes=2 
+```bash
+export model_name="t5-3b"
+export dataset_name="super_glue"
+export dataset_config_name="boolq"
+export adapter_config_string="prefix_tuning"
+
+export experiment_name="$model_name-$dataset_name-$dataset_config_name-$adapter_config_string"
+
 python scripts/finetuning_seq2seq.py \
     --output_dir "results/$experiment_name"\
-    --model_name_or_path "t5-base" \
-    --dataset_name "cnn_dailymail" \
-    --adapter_config_string "pfeiffer" \
+    --model_name_or_path $model_name \
+    --dataset_name $dataset_name \
+    --dataset_config_name $dataset_config_name \
+    --adapter_config_string $adapter_config_string \
     --total_batch_size 32 \
     --per_device_train_batch_size 8 \
-    --max_source_length 1024 \
-    --max_target_length 128 \
+    --max_source_length 128 \
+    --max_target_length 8 \
     --num_beams 5 \
     --learning_rate 2e-4 \
-    --eval_every_steps 1000 \
-    --source_prefix "summarize: "
+    --eval_every_steps 1000
+
 ```
 
 
