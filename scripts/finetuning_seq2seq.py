@@ -52,6 +52,7 @@ from datasets import load_dataset
 import wandb
 from tqdm.auto import tqdm, trange
 from loguru import logger
+import ipdb
 
 from adapters import LlamaAdapterModel, T5AdapterModel
 
@@ -181,7 +182,7 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
             logger.info(f"It should contain kv_size for T5-3B and T5-11B")
             return adapter_config_string
 
-        logger.info(f"Adding [kv_size={model_config.kv_size}] to the adapter config string")
+        logger.info(f"Adding [kv_size={model_config.d_kv}] to the adapter config string")
         adapter_config_string += "[kv_size=64]"
         logger.info(f"Using adapter config string: {adapter_config_string}")
         return adapter_config_string
@@ -189,7 +190,7 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
     if adapter_config_string == "unipelt":
         logger.info("Building default unipelt config for T5. Non-default unipelt configuratoins need to be provided explicitly")
         _lora = "lora[r=8,use_gating=True]"
-        _prefix = f"prefix_tuning[prefix_length=10,use_gating=True,kv_size={model_config.kv_size}]"
+        _prefix = f"prefix_tuning[prefix_length=10,use_gating=True,kv_size={model_config.d_kv}]"
         _adapter = "seq_bn[reduction_factor=16,use_gating=True]"
         adapter_config_string = f"{_lora}|{_prefix}|{_adapter}"
         logger.info(f"Using adapter config string: {adapter_config_string}")
@@ -197,7 +198,7 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
 
     if adapter_config_string == "mam":
         logger.info("Building default MAM config for T5. Non-default mam configuratoins need to be provided explicitly")
-        _prefix = f"prefix_tuning[bottleneck_size=800,kv_size={model_config.kv_size}]"
+        _prefix = f"prefix_tuning[bottleneck_size=800,kv_size={model_config.d_kv}]"
         _adapter = "par_bn"
         adapter_config_string = f"{_prefix}|{_adapter}"
         logger.info(f"Using adapter config string: {adapter_config_string}")
