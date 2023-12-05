@@ -404,6 +404,7 @@ def evaluate_model(
             lists of strings (predictions, labels) after postprocessing.
             For an example, look at `peft_comparison.text2text_utils.postprocess_summarization`
     """
+    _time = time.time()
     model.eval()
     pbar = tqdm(
         dataloader,
@@ -485,6 +486,7 @@ def evaluate_model(
     result["eval/throughput_batches"] = throughput_batches / (eval_step + 1)
 
     model.train()
+    logger.info(f"Evaluation took {time.time() - _time:.2f} seconds")
     return result
 
 
@@ -858,8 +860,8 @@ def main():
             global_step += 1
             outputs = model(**batch)
             loss = outputs.loss
-            loss = loss / args.gradient_accumulation_steps
-            accelerator.backward(loss)
+            loss_for_backward = loss / args.gradient_accumulation_steps
+            accelerator.backward(loss_for_backward)
 
             if not(global_step % args.gradient_accumulation_steps == 0 or global_step == len(train_dataloader) - 1):
                 continue
@@ -907,7 +909,7 @@ def main():
                 step=update_step,
             )
 
-            if (update_step + 1) % args.eval_every_steps == 0:
+            if (update_step + 1) % args.eval_every_steps == 0 or update_step == 1:
                 logger.info(f"Evaluating model at, update step: {update_step}, global step: {global_step}")
                 result = evaluate_model(
                     model=model,
