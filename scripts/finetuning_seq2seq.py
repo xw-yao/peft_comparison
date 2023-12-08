@@ -388,14 +388,24 @@ def get_model_hf(args, device):
     default_kwargs = peft_comparison.mappings.hf_adapter_config_string_to_peft_args[method]
     method_kwargs = default_kwargs | method_kwargs
 
-    if method == "hf_lora":
+    if method in ["hf_lora", "hf_lora_all"]:
         peft_config = peft.LoraConfig(
             task_type=task_type,
             inference_mode=False,
             **method_kwargs,
         )
+    elif method == "hf_krona":
+        peft_config = peft.LoKrConfig(
+            task_type=task_type,
+            **method_kwargs,
+        )
+    elif method == "hf_loha":
+        peft_config = peft.LoHaConfig(
+            task_type=task_type,
+            **method_kwargs,
+        )
     else:
-        raise ValueError(f"Unknown method {method}, config string={args.adapter_config_string}")
+        raise ValueError(f"Can't find PEFT config object for method {method}, config string={args.adapter_config_string}")
 
     model = peft.get_peft_model(model, peft_config)
     model = model.to(device=device, dtype=args.torch_dtype)
