@@ -1,15 +1,15 @@
 set -e
 
 export model="t5-large"
-export dataset_name="super_glue"
+export dataset_name="cnn_dailymail"
 
 learning_rates=(1e-3 1e-4 5e-5)
 weight_decays=(0 0.1)
 seed_vals=(0 1 42)
 
-for adapter_config_string in "compacter" "compacter++"; do
+for adapter_config_string in "pfeiffer" "houlsby" "scaled_parallel"; do
     for seed in "${seed_vals[@]}"; do
-        for dataset_config_name in "rte" "copa" "boolq"; do
+        for dataset_config_name in "3.0.0"; do
             for lr in "${learning_rates[@]}"; do
                 for weight_decay in "${weight_decays[@]}"; do
 
@@ -29,16 +29,16 @@ for adapter_config_string in "compacter" "compacter++"; do
                             --model_name_or_path $model \
                             --adapter_config_string $adapter_config_string \
                             --per_device_train_batch_size 16 \
-                            --total_batch_size 32 \
+                            --total_batch_size 64 \
                             --max_source_length 512 \
-                            --max_target_length 8 \
-                            --num_beams 5 \
+                            --max_target_length 128 \
+                            --num_beams 3 \
                             --learning_rate $lr \
                             --weight_decay $weight_decay \
-                            --num_train_epochs 3 \
+                            --num_train_epochs 1 \
                             --min_train_steps 100 \
                             --seed $seed \
-                            --tags "grid_search" \
+                            --tags "grid_search, t5-large, cnn" \
 
                 done
             done
