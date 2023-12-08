@@ -72,6 +72,13 @@ class LoRA(nn.Module):
             else:
                 raise ValueError("Unknown init_weights type: {}".format(config.init_weights))
 
+    def __repr__(self):
+        if hasattr(self, "lora_A"):
+            in_dim = self.lora_A.shape[-1]
+            out_dim = self.lora_B.shape[0]
+            return f"LoRA({in_dim}, {self.r}, {out_dim})"
+        return super().__repr__()
+
     def com(self, weights: torch.Tensor, added: torch.Tensor, scaling=None) -> torch.Tensor:
         """Performs the composition operation between existing and injected weights."""
         if scaling is None:

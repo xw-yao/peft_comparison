@@ -1,7 +1,25 @@
+# default parameters are selected to match Adapters default parameters
+hf_adapter_config_string_to_peft_args = {
+    "hf_lora": {
+        "r": 8,
+        "lora_alpha": 8,
+        "target_modules": ["q", "v"],
+    },
+    "hf_lora_all": {
+        "r": 8,
+        "lora_alpha": 8,
+        "target_modules": ["k", "q", "v", "o", "wi", "wo"],  # assumes T5 model
+    },
+    "hf_krona": {
+        "target_modules": ["q", "v"],
+    },
+    "hf_loha": {
+        "target_modules": ["q", "v"],
+    }
+}
+
 # @TODO: we might need to create a separate mapping for Llama
 # - if may be beneficial to change "choice1" and "choice2" to "A" and "B"
-
-
 summarization_name_mapping = {
     "amazon_reviews_multi": ("review_body", "review_title"),
     "big_patent": ("description", "abstract"),

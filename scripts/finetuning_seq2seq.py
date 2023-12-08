@@ -52,11 +52,13 @@ from datasets import load_dataset
 import wandb
 from tqdm.auto import tqdm, trange
 from loguru import logger
-import ipdb
 
+import peft
+import adapters
 from adapters import LlamaAdapterModel, T5AdapterModel
 
 import peft_comparison
+import peft_comparison.utils
 import peft_comparison.text2text_utils
 import peft_comparison.mappings
 from peft_comparison.collation import DataCollatorForSeq2SeqWithMetadata, DataCollatorForCausalLMWithMetadata
@@ -83,7 +85,7 @@ def parse_args():
                         And for cnn_dailymail it can be "3.0.0"
                         Lookup huggingface.co/datasets for more information.
                         """)
-    parser.add_argument("--max_source_length", type=int, default=1024, help="The maximum total input sequence length after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded.")
+    parser.add_argument("--max_source_length", type=int, default=512, help="The maximum total input sequence length after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded.")
     parser.add_argument("--source_prefix", type=str, default="", help="A prefix to add before every source text, useful for T5 models.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=8, help="The number of processes to use for the preprocessing.")
     parser.add_argument("--subsample_data", type=int, default=None, help="If passed, will subsample the dataset to this many examples. (debug only)")
@@ -148,8 +150,12 @@ def parse_args():
     if args.val_max_target_length is None:
         args.val_max_target_length = args.max_target_length
 
-    if args.per_device_eval_batch_size is None:
+    # this allows to effectively mitigate OOM issues with beam search
+    if args.per_device_eval_batch_size is None and args.num_beams < 5:
         args.per_device_eval_batch_size = args.per_device_train_batch_size
+
+    if args.per_device_eval_batch_size is None and args.num_beams >= 5:
+        args.per_device_eval_batch_size = args.per_device_train_batch_size // 2
 
     if args.dataset_name == "cnn_dailymail":
         args.dataset_config_name = "3.0.0"
@@ -259,12 +265,6 @@ def get_model(args, device):
             "`--source_prefix 'summarize: ' `"
         )
 
-    # tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path,
-        model_max_length=max(args.max_source_length, args.max_target_length) + 2,  # void the annoying warning messge, +2 is for bos and eos
-    )
-
     # model
     model_class = AutoModelForSeq2SeqLM
     adapters_model_class = T5AdapterModel
@@ -336,11 +336,13 @@ def get_model(args, device):
         if args.load_in_8bit or args.load_in_4bit:
             logger.error(f"Full tuning is not supported for 8bit or 4bit models, ignoring the flag")
 
-        model_class = AutoModelForCausalLM if "llama" in args.model_name_or_path.lower() else AutoModelForSeq2SeqLM
+        is_llama = "llama" in args.model_name_or_path.lower()
+        model_class = AutoModelForCausalLM if is_llama else AutoModelForSeq2SeqLM
+
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
-            use_flash_attention_2="llama" in args.model_name_or_path.lower(),
+            **({"use_flash_attention_2": True} if is_llama else {}),
         )
 
     # send to device if not quantized
@@ -353,34 +355,51 @@ def get_model(args, device):
             if "adapter" in name:
                 module.to(device=device, dtype=args.torch_dtype)
 
-    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
-    # on a small vocab and want a smaller embedding size, remove this test.
-    if model.config.decoder_start_token_id is None:
-        model.config.decoder_start_token_id = tokenizer.bos_token_id
+    return model
 
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
-        model.config.pad_token_id = model.config.eos_token_id
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
 
-    logger.info(model)
+def get_model_hf(args, device):
+    if "t5" in args.model_name_or_path and args.source_prefix is None and args.task_type == "summarization":
+        logger.warning(
+            "You're running a t5 model but didn't provide a source prefix, which is the expected, e.g. with "
+            "`--source_prefix 'summarize: ' `"
+        )
 
-    dtype_counts = {}
-    for p in model.parameters():
-        dtype_counts[str(p.dtype)] = dtype_counts.get(str(p.dtype), 0) + p.numel()
+    model_class = AutoModelForSeq2SeqLM
+    task_type = peft.TaskType.SEQ_2_SEQ_LM
+    is_llama = "llama" in args.model_name_or_path.lower()
+    if is_llama:
+        logger.info("Using LLaMA model")
+        model_class = AutoModelForCausalLM
+        task_type = peft.TaskType.CAUSAL_LM
 
-    if len(dtype_counts) == 0:
-        logger.warning("No parameters in the model?")
+    model = model_class.from_pretrained(
+        args.model_name_or_path,
+        torch_dtype=args.torch_dtype,
+        load_in_4bit=args.load_in_4bit,
+        load_in_8bit=args.load_in_8bit,
+        **({"use_flash_attention_2": True} if is_llama else {}),
+    )
 
-    logger.info(dtype_counts)
+    method, method_kwargs = peft_comparison.utils.parse_config_string(args.adapter_config_string)
+    if method not in peft_comparison.mappings.hf_adapter_config_string_to_peft_args:
+        raise ValueError(f"Unknown method {method}, config string={args.adapter_config_string}")
 
-    total_parameters = sum(dtype_counts.values())
-    dtype_info = [f"{dtype}: {count} ({count / total_parameters * 100:.2f}%)" for dtype, count in dtype_counts.items()]
-    logger.info("Model dtypes: ", " | ".join(dtype_info))
+    default_kwargs = peft_comparison.mappings.hf_adapter_config_string_to_peft_args[method]
+    method_kwargs = default_kwargs | method_kwargs
 
-    return model, tokenizer
+    if method == "hf_lora":
+        peft_config = peft.LoraConfig(
+            task_type=task_type,
+            inference_mode=False,
+            **method_kwargs,
+        )
+    else:
+        raise ValueError(f"Unknown method {method}, config string={args.adapter_config_string}")
+
+    model = peft.get_peft_model(model, peft_config)
+    model = model.to(device=device, dtype=args.torch_dtype)
+    return model
 
 
 @torch.no_grad()
@@ -419,6 +438,9 @@ def evaluate_model(
     throughput_tokens = 0
     throughput_examples = 0
     throughput_batches = 0
+    first_10_predictions = []
+    first_10_labels = []
+
     for eval_step, batch in enumerate(dataloader):
         pbar.update()
         if max_iters is not None and eval_step > max_iters:
@@ -444,7 +466,6 @@ def evaluate_model(
         throughput_examples += batch["input_ids"].shape[0] / update_time
         throughput_batches += 1 / update_time
 
-        #
         if decoder_only:
             # replace token_ids corresponding to the input text (without the label text i.e. class label name or summary)
             generated_tokens = peft_comparison.text2text_utils.strip_input_tokens_from_generation(
@@ -465,15 +486,20 @@ def evaluate_model(
             print(f"Input ids shape: {batch['input_ids'].shape}"),
             print(f"{len(decoded_preds)} != {len(labels_str)}")
 
-        if eval_step == 0:
-            logger.info(f"Example of predictions: {decoded_preds[0]}")
-            logger.info(f"Example of labels: {labels_str[0]}")
-
         decoded_preds, labels_str = postprocess_fn(decoded_preds, labels_str)
         metric.add_batch(predictions=decoded_preds, references=labels_str)
 
+        if len(first_10_predictions) < 10:
+            first_10_predictions.extend(decoded_preds[:10])
+            first_10_labels.extend(labels_str[:10])
+
+        if eval_step == 0:
+            logger.info("\n")
+            logger.info(f"Example of predictions: {decoded_preds[0]}")
+            logger.info(f"Example of labels: {labels_str[0]}")
+
     if metric.name == "rouge":
-        result = metric.compute(use_stemmer=True)
+        result = metric.compute()#(use_stemmer=True)
     else:
         result = metric.compute()
 
@@ -484,6 +510,13 @@ def evaluate_model(
     result["eval/throughput_tokens"] = throughput_tokens / (eval_step + 1)
     result["eval/throughput_examples"] = throughput_examples / (eval_step + 1)
     result["eval/throughput_batches"] = throughput_batches / (eval_step + 1)
+
+    logger.info("Logging predictions to wandb")
+    if wandb.run is not None:
+        table = wandb.Table(columns=["Targets", "Predictions"])
+        for t, p in zip(first_10_labels, first_10_predictions):
+            table.add_data(t, p)
+        result["predicitons"] = table
 
     model.train()
     logger.info(f"Evaluation took {time.time() - _time:.2f} seconds")
@@ -540,8 +573,48 @@ def main():
     logger.info("*" * 40)
 
     # Load pretrained model and tokenizer
-    model, tokenizer = get_model(args, device=device)
+    use_adapters_library = not args.adapter_config_string.startswith("hf_")
+    if use_adapters_library:
+        model = get_model(args, device=device)
+    else:
+        model = get_model_hf(args, device=device)
     torch.cuda.reset_peak_memory_stats()
+
+    # tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name_or_path,
+        model_max_length=max(args.max_source_length, args.max_target_length) + 2,  # void the annoying warning messge, +2 is for bos and eos
+    )
+
+    if model.config.decoder_start_token_id is None:
+        model.config.decoder_start_token_id = tokenizer.bos_token_id
+
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({'pad_token': tokenizer.eos_token})
+        model.config.pad_token_id = model.config.eos_token_id
+
+    embedding_size = model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) != embedding_size:
+        logger.warning(f"Tokenizer vocab size ({len(tokenizer)}) does not match the model "
+                       f"embedding size ({embedding_size}).")
+        if len(tokenizer) > embedding_size:
+            raise ValueError("Tokenizer vocab size is larger than the model embedding size. "
+                             "Probably you're using a wrong tokenizer/model combination. ")
+
+    logger.info(model)
+
+    dtype_counts = {}
+    for p in model.parameters():
+        dtype_counts[str(p.dtype)] = dtype_counts.get(str(p.dtype), 0) + p.numel()
+
+    if len(dtype_counts) == 0:
+        logger.warning("No parameters in the model?")
+
+    logger.info(dtype_counts)
+
+    total_parameters = sum(dtype_counts.values())
+    dtype_info = [f"{dtype}: {count} ({count / total_parameters * 100:.2f}%)" for dtype, count in dtype_counts.items()]
+    logger.info("Model dtypes: ", " | ".join(dtype_info))
 
     # we need to add padding token to llama
     if args.decoder_only:
@@ -613,12 +686,10 @@ def main():
                 input_wo_label = input_wo_label["input_ids"]
                 model_inputs["metadata"] = []
                 for idx in range(len(targets)):
-                    model_inputs["metadata"].append(
-                        {
-                            "targets": targets[idx],
-                            "input_len": len(input_wo_label[idx]),
-                        }
-                    )
+                    model_inputs["metadata"].append({
+                        "targets": targets[idx],
+                        "input_len": len(input_wo_label[idx]),
+                    })
 
         return model_inputs
 
@@ -631,6 +702,16 @@ def main():
             desc="Running tokenizer on val dataset  ",
             fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
         )
+        test_dataset = eval_dataset
+        if "test" in raw_datasets:
+            test_dataset = raw_datasets["test"].map(
+                preprocess_function,
+                batched=True,
+                num_proc=args.preprocessing_num_workers,
+                remove_columns=column_names,
+                fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
+            )
+
         train_dataset = raw_datasets["train"].map(
             preprocess_function,
             batched=True,
@@ -671,9 +752,23 @@ def main():
         )
 
     train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
+        train_dataset,
+        shuffle=True,
+        collate_fn=data_collator,
+        batch_size=args.per_device_train_batch_size
     )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+    eval_dataloader = DataLoader(
+        eval_dataset,
+        collate_fn=data_collator,
+        batch_size=args.per_device_eval_batch_size,
+    )
+    test_dataloader = eval_dataloader
+    if "test" in raw_datasets:
+        test_dataloader = DataLoader(
+            test_dataset,
+            collate_fn=data_collator,
+            batch_size=args.per_device_eval_batch_size,
+        )
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -717,8 +812,8 @@ def main():
                        f"to meet `min_train_steps` requirement.")
 
     # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader
+    model, optimizer, train_dataloader, eval_dataloader, test_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, test_dataloader
     )
 
     if args.eval_every_steps is None:
@@ -932,7 +1027,9 @@ def main():
 
     # final evaluation
     # @NOTE: we want to do atleast one evaluation with beam search
-    logger.info(f"Final evaluation (step={update_step})")
+    update_step += 1
+    logger.info(f"Final evaluation, validation set, {update_step=}")
+
     result = evaluate_model(
         model=model,
         metric=metric,
@@ -954,7 +1051,26 @@ def main():
     logger.info(pformat(result))
     accelerator.log(result, step=update_step)
 
-    accelerator.log(best_results_dict, step=update_step + 1)
+    accelerator.log(best_results_dict, step=update_step)
+
+    # Eval on test set
+    if "test" in raw_datasets:
+        logger.info(f"Final evaluation, test set, {update_step=}")
+        result = evaluate_model(
+            model=model,
+            metric=metric,
+            tokenizer=tokenizer,
+            dataloader=test_dataloader,
+            accelerator=accelerator,
+            max_length=(args.max_source_length + args.max_target_length) if args.decoder_only else args.val_max_target_length,
+            target_length=args.val_max_target_length,
+            num_beams=args.num_beams,
+            max_iters=None,
+            postprocess_fn=postprocess_fn,
+            decoder_only=args.decoder_only
+        )
+        result = {f"test/{k.lstrip('eval/')}": v for k, v in result.items()}
+        accelerator.log(result, step=update_step)
 
     # save results and all arguments
     all_results = best_results_dict.copy()
@@ -963,10 +1079,11 @@ def main():
         if not isinstance(v, (float, int, bool, str, list)):
             all_results["args"][k] = str(v)
 
-    print(f"Saving results to {args.output_dir}, is None is {args.output_dir is None}, type is {type(args.output_dir)}")
+    print(f"Saving results to {args.output_dir}")
     if os.path.exists(args.output_dir):
         with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
-            json.dump(all_results, f, indent=4)
+            _all_results = {k: v for k, v in all_results.items() if not isinstance(v, wandb.Table)}
+            json.dump(_all_results, f, indent=4)
 
     logger.info("Script successfully finished!")
 

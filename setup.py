@@ -45,6 +45,7 @@ setup(
         "loguru",
         "nltk",
         "deepspeed",
+        "peft",
         "ipdb",
     ],
     extras_require=extras,
