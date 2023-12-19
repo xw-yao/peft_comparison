@@ -23,10 +23,10 @@ huggingface-cli login
 ## Usage example
 
 ```bash
-export model_name="t5-3b"
+export model_name="t5-large"
 export dataset_name="super_glue"
 export dataset_config_name="boolq"
-export adapter_config_string="prefix_tuning"
+export adapter_config_string="hf_loha"
 
 export experiment_name="$model_name-$dataset_name-$dataset_config_name-$adapter_config_string"
 
@@ -43,7 +43,6 @@ python scripts/finetuning_seq2seq.py \
     --num_beams 5 \
     --learning_rate 2e-4 \
     --eval_every_steps 1000
-
 ```
 
 
@@ -59,6 +58,9 @@ python scripts/finetuning_seq2seq.py \
 "prefix_tuning"
 "prefix_tuning_flat"
 "lora"
+"hf_lora"      # huggingface PEFT implementation of lora
+"hf_lora_all"  # apply LoRA to all layers
+"hf_krona"
 "ia3"
 "mam"
 "unipelt"
@@ -69,6 +71,5 @@ python scripts/finetuning_seq2seq.py \
 Not yet implemented, but expected:
 ```
 "attn_tuning"
-"krona"
 "relora"
 ```
