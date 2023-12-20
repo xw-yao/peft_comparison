@@ -82,8 +82,8 @@ if __name__ == "__main__":
                             --output_dir "{results_path}"\
                             --dataset_name "{_dataset_name}" \
                             --dataset_config_name "{_dataset_config_name}" \
-                            --model_name_or_path {model} \
-                            --adapter_config_string {adapter_config_string} \
+                            --model_name_or_path "{model}" \
+                            --adapter_config_string "{adapter_config_string}" \
                             --per_device_train_batch_size {_batch_size} \
                             --total_batch_size 32 \
                             --max_source_length 512 \
