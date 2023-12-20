@@ -554,6 +554,8 @@ def main():
     if not accelerator.is_main_process:
         logger.remove()
 
+    logger.info(f"Accelerator state: {accelerator.state}")
+
     # It's important to get ths after the accelerator initialization
     device = torch.cuda.current_device()
     args.device = device
