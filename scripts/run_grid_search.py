@@ -33,6 +33,7 @@ if __name__ == "__main__":
     parser.add_argument("--adapter_config_string", type=str, default="hf_lora_all")
     parser.add_argument("--load_in_8bit", action="store_true", default=False)
     parser.add_argument("--launch_command", default=None, type=str)
+    parser.add_argument("--batch_size", default=None, type=int)
 
     args = parser.parse_args()
 
@@ -57,6 +58,9 @@ if __name__ == "__main__":
         _dataset_name = "super_glue" if dataset_name in ["rte", "copa", "boolq"] else "cnn_dailymail"
         _dataset_config_name = dataset_name if dataset_name in ["rte", "copa", "boolq"] else "3.0.0"
         _batch_size = hparams[model][dataset_name]["batch_size"]
+        if args.batch_size is not None:
+            _batch_size = args.batch_size
+
         _max_target_length = 8 if dataset_name != "cnn_dailymail" else 128
         _train_epochs = 3 if dataset_name != "cnn_dailymail" else 1
         _tag = f"{dataset_name}_{adapter_config_string}_grid_search"
