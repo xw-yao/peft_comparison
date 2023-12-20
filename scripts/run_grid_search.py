@@ -147,7 +147,7 @@ if __name__ == "__main__":
                             --model_name_or_path {model} \
                             --adapter_config_string {adapter_config_string} \
                             --per_device_train_batch_size {_batch_size} \
-                            --total_batch_size {_batch_size} \
+                            --total_batch_size 32 \
                             --max_source_length 512 \
                             --max_target_length {_max_target_length} \
                             --num_beams 5 \
