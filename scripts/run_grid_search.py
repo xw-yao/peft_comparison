@@ -6,13 +6,25 @@ import argparse
 import wandb
 from loguru import logger
 
-
-dataset2bs = {
-    "rte": 32,
-    "copa": 32,
-    "boolq": 16,
-    "cnn_dailymail": 8,  # don't use this script for CNN, it's a bad idea
+# don't use this script for CNN!
+hparams = {
+    "t5-large": {
+        "rte": {"batch_size": 32},
+        "copa": {"batch_size": 32},
+        "boolq": {"batch_size": 16},
+    },
+    "t5-3b": {
+        "rte": {"batch_size": 4},
+        "copa": {"batch_size": 4},
+        "boolq": {"batch_size": 2},
+    },
+    "t5-11b": {
+        "rte": {"batch_size": 1},
+        "copa": {"batch_size": 1},
+        "boolq": {"batch_size": 1},
+    },
 }
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -35,7 +47,7 @@ if __name__ == "__main__":
     for dataset_name in datasets:
         _dataset_name = "super_glue" if dataset_name in ["rte", "copa", "boolq"] else "cnn_dailymail"
         _dataset_config_name = dataset_name if dataset_name in ["rte", "copa", "boolq"] else "3.0.0"
-        _batch_size = dataset2bs[dataset_name]
+        _batch_size = hparams[model][dataset_name]["batch_size"]
         _max_target_length = 8 if dataset_name != "cnn_dailymail" else 128
         _train_epochs = 3 if dataset_name != "cnn_dailymail" else 1
         _tag = f"{dataset_name}_{adapter_config_string}_grid_search"
