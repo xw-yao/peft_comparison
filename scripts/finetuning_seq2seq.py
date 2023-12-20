@@ -453,7 +453,7 @@ def evaluate_model(
 
     synced_gpus = None
     _ds_plugin = accelerator.state.deepspeed_plugin
-    if _ds_plugin is not None and _ds_plugin.stage == 3:
+    if _ds_plugin is not None and _ds_plugin.zero_stage == 3:
         synced_gpus = True
         logger.info("Running in stage 3, will use synced gpus for generation")
 
