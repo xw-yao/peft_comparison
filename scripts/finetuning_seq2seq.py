@@ -55,6 +55,7 @@ from tqdm.auto import tqdm, trange
 from loguru import logger
 
 import peft
+from peft import prepare_model_for_int8_training
 import adapters
 from adapters import LlamaAdapterModel, T5AdapterModel
 
@@ -382,6 +383,9 @@ def get_model_hf(args, device):
         **({"use_flash_attention_2": True} if is_llama else {}),
     )
 
+    if args.load_in_8bit:
+        model = prepare_model_for_int8_training(model)
+
     method, method_kwargs = peft_comparison.utils.parse_config_string(args.adapter_config_string)
     if method not in peft_comparison.mappings.hf_adapter_config_string_to_peft_args:
         raise ValueError(f"Unknown method {method}, config string={args.adapter_config_string}")
@@ -544,7 +548,7 @@ def evaluate_model(
 
 @contextmanager
 def gradient_synchronization_context(ddp_model, should_synchronize):
-    if should_synchronize:
+    if should_synchronize or not isinstance(ddp_model, torch.nn.parallel.DistributedDataParallel):
         yield
     else:
         with ddp_model.no_sync():
@@ -553,6 +557,9 @@ def gradient_synchronization_context(ddp_model, should_synchronize):
 
 def main():
     args = parse_args()
+    fingerprint_args = {k: v for k, v in vars(args).items() if k not in ["lr_scheduler_type", "torch_dtype"]}  # remove not serializable
+    hash_str = json.dumps(fingerprint_args, sort_keys=True)
+    hash_str += open(__file__, "r").read()
 
     if args.seed is not None:
         set_seed(args.seed)
@@ -724,6 +731,8 @@ def main():
         return model_inputs
 
     with accelerator.main_process_first():
+        logger.warning("Using manual fingerprinting for dataset preprocessing")
+        fingerprint = str(hash(hash_str + "validation"))
         eval_dataset = raw_datasets["validation"].map(
             preprocess_function,
             batched=True,
@@ -731,17 +740,21 @@ def main():
             remove_columns=column_names,
             desc="Running tokenizer on val dataset  ",
             fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
+            new_fingerprint=fingerprint,
         )
         test_dataset = eval_dataset
         if "test" in raw_datasets:
+            fingerprint = str(hash(hash_str + "test"))
             test_dataset = raw_datasets["test"].map(
                 preprocess_function,
                 batched=True,
                 num_proc=args.preprocessing_num_workers,
                 remove_columns=column_names,
                 fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
+                new_fingerprint=fingerprint,
             )
 
+        fingerprint = str(hash(hash_str + "train"))
         train_dataset = raw_datasets["train"].map(
             preprocess_function,
             batched=True,
@@ -749,7 +762,8 @@ def main():
             num_proc=args.preprocessing_num_workers,
             remove_columns=column_names,
             desc="Running tokenizer on train dataset",
-            fn_kwargs={"decoder_only": args.decoder_only}
+            fn_kwargs={"decoder_only": args.decoder_only},
+            new_fingerprint=fingerprint,
         )
 
     if len(raw_datasets["validation"]) < 1_000:
@@ -960,6 +974,7 @@ def main():
 
         if prof is not None: prof.start()
         for batch_idx, batch in enumerate(active_dataloader):
+            global_step += 1
             if prof is not None: prof.step()
             # vars for calculating throughput
             batch_start_time = time.time()
@@ -982,13 +997,18 @@ def main():
                 t_text = tokenizer.decode(t_ids, skip_special_tokens=False)
                 logger.info(f"Labels text: {t_text}")
 
-            global_step += 1
-            outputs = model(**batch)
-            loss = outputs.loss
-            loss_for_backward = loss / args.gradient_accumulation_steps
-            accelerator.backward(loss_for_backward)
+            is_update_step = bool(
+                global_step % args.gradient_accumulation_steps == 0
+                or global_step == len(train_dataloader) - 1
+            )
 
-            if not(global_step % args.gradient_accumulation_steps == 0 or global_step == len(train_dataloader) - 1):
+            with gradient_synchronization_context(model, should_synchronize=is_update_step):
+                outputs = model(**batch)
+                loss = outputs.loss
+                loss_for_backward = loss / args.gradient_accumulation_steps
+                accelerator.backward(loss_for_backward)
+
+            if not is_update_step:
                 continue
             # the code below is only executed on the update step
 
