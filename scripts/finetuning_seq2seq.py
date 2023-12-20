@@ -26,6 +26,7 @@ import os
 import random
 from pprint import pformat
 import time
+from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
@@ -541,6 +542,15 @@ def evaluate_model(
     return result
 
 
+@contextmanager
+def gradient_synchronization_context(ddp_model, should_synchronize):
+    if should_synchronize:
+        yield
+    else:
+        with ddp_model.no_sync():
+            yield
+
+
 def main():
     args = parse_args()
 
@@ -655,7 +665,7 @@ def main():
     if args.task_type == "classification":
         _dataset_name_for_preprocessing = args.dataset_config_name
 
-    if args.dataset_name in ["cnn_dailymail", "EdinburghNLP/xsum"]:
+    if args.subsample_data is None and args.dataset_name in ["cnn_dailymail", "EdinburghNLP/xsum"]:
         # 1600 is selected based on the MAM paper
         # sample 1600 examples for validation and test deterministically
         logger.warning(f"Subsampling the dataset to 1600 first examples for validation and test.")
