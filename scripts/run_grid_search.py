@@ -31,6 +31,8 @@ if __name__ == "__main__":
     parser.add_argument("--datasets", required=True, type=str)
     parser.add_argument("--model", type=str, default="t5-large")
     parser.add_argument("--adapter_config_string", type=str, default="hf_lora_all")
+    parser.add_argument("--load_in_8bit", action="store_true", default=False)
+    parser.add_argument("--launch_command", default=None, type=str)
 
     args = parser.parse_args()
 
@@ -41,6 +43,13 @@ if __name__ == "__main__":
     learning_rates = ["1e-3", "1e-4", "5e-5"]
     # datasets = ["rte", "copa", "boolq", "cnn_dailymail"]   # # don't use this script for CNN, it's a bad idea
     datasets = args.datasets.split(",")
+
+    launch_command = "python"
+    if args.launch_command is not None:
+        launch_command = args.launch_command
+
+    if launch_command == "distributed":
+        launch_command = "python -m accelerate.commands.launch --num_processes=8 --main_process_port 1235 --num_machines 1 --mixed_precision bf16 --dynamo_backend no"
 
     dataset_2_results = {}
 
@@ -64,7 +73,7 @@ if __name__ == "__main__":
 
             logger.info(f"Running {experiment_name}")
             command = f"""
-                    python -m accelerate.commands.launch --num_processes=8 --main_process_port 1235 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
+                    {launch_command} \
                         scripts/finetuning_seq2seq.py \
                             --output_dir "{results_path}"\
                             --dataset_name "{_dataset_name}" \
@@ -83,6 +92,9 @@ if __name__ == "__main__":
                             --seed {default_seed} \
                             --tags "grid_search,fully_automated,{_tag}" \
             """.strip()
+            if args.load_in_8bit:
+                command += " --load_in_8bit"
+
             logger.info(f"Running\n{command}")
             process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             for line in process.stdout:
@@ -123,7 +135,8 @@ if __name__ == "__main__":
 
             logger.info(f"Running {experiment_name}")
             command = f"""
-                    python scripts/finetuning_seq2seq.py \
+                    {launch_command} \
+                        scripts/finetuning_seq2seq.py \
                             --output_dir "{results_path}"\
                             --dataset_name "{_dataset_name}" \
                             --dataset_config_name "{_dataset_config_name}" \
@@ -141,6 +154,9 @@ if __name__ == "__main__":
                             --seed {seed} \
                             --tags "seeds,fully_automated,{_tag}" \
             """.strip()
+            if args.load_in_8bit:
+                command += " --load_in_8bit"
+
             logger.info(f"Running\n{command}")
             process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             for line in process.stdout:

@@ -609,6 +609,7 @@ def main():
         logger.info(f"{k:30}: {v}")
     logger.info("*" * 40)
 
+    logger.info("Loading model")
     # Load pretrained model and tokenizer
     use_adapters_library = not args.adapter_config_string.startswith("hf_")
     if use_adapters_library:
