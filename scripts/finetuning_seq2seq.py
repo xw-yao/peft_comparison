@@ -334,7 +334,7 @@ def get_model(args, device):
 
     elif args.adapter_config_string == "full_tuning":
         if args.load_in_8bit or args.load_in_4bit:
-            logger.error(f"Full tuning is not supported for 8bit or 4bit models, ignoring the flag")
+            logger.error(f"Full tuning can't be applied to quantized models")
 
         is_llama = "llama" in args.model_name_or_path.lower()
         model_class = AutoModelForCausalLM if is_llama else AutoModelForSeq2SeqLM
@@ -451,6 +451,12 @@ def evaluate_model(
     first_10_predictions = []
     first_10_labels = []
 
+    is_stage3 = False
+    _ds_plugin = accelerator.deepspeed_plugin
+    if _ds_plugin is not None and _ds_plugin.stage == 3:
+        is_stage3 = True
+        logger.info("Running in stage 3, will use synced gpus for generation")
+
     for eval_step, batch in enumerate(dataloader):
         pbar.update()
         if max_iters is not None and eval_step > max_iters:
@@ -465,7 +471,9 @@ def evaluate_model(
             max_new_tokens=target_length,
             num_beams=num_beams,
             do_sample=False,
+            synced_gpus=is_stage3,  # stage 3 requires synced gpus or generation may stall
         )
+
         update_time = time.time() - batch_start_time
         batch_start_time = time.time()
 
