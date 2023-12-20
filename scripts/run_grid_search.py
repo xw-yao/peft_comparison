@@ -64,7 +64,8 @@ if __name__ == "__main__":
 
             logger.info(f"Running {experiment_name}")
             command = f"""
-                    python scripts/finetuning_seq2seq.py \
+                    python -m accelerate.commands.launch --num_processes=8 --main_process_port 1235 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
+                        scripts/finetuning_seq2seq.py \
                             --output_dir "{results_path}"\
                             --dataset_name "{_dataset_name}" \
                             --dataset_config_name "{_dataset_config_name}" \
