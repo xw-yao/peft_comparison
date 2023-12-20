@@ -451,10 +451,10 @@ def evaluate_model(
     first_10_predictions = []
     first_10_labels = []
 
-    is_stage3 = False
+    synced_gpus = None
     _ds_plugin = accelerator.deepspeed_plugin
     if _ds_plugin is not None and _ds_plugin.stage == 3:
-        is_stage3 = True
+        synced_gpus = True
         logger.info("Running in stage 3, will use synced gpus for generation")
 
     for eval_step, batch in enumerate(dataloader):
@@ -471,7 +471,7 @@ def evaluate_model(
             max_new_tokens=target_length,
             num_beams=num_beams,
             do_sample=False,
-            synced_gpus=is_stage3,  # stage 3 requires synced gpus or generation may stall
+            synced_gpus=synced_gpus,  # stage 3 requires synced gpus or generation may stall
         )
 
         update_time = time.time() - batch_start_time
