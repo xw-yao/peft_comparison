@@ -155,7 +155,7 @@ def parse_args():
         args.per_device_eval_batch_size = args.per_device_train_batch_size
 
     if args.per_device_eval_batch_size is None and args.num_beams >= 5:
-        args.per_device_eval_batch_size = args.per_device_train_batch_size // 2
+        args.per_device_eval_batch_size = max(1, args.per_device_train_batch_size // 2)
 
     if args.dataset_name == "cnn_dailymail":
         args.dataset_config_name = "3.0.0"
