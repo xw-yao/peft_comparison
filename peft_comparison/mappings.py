@@ -15,7 +15,8 @@ hf_adapter_config_string_to_peft_args = {
     },
     "hf_loha": {
         "target_modules": ["q", "v"],
-    }
+    },
+    "hf_ia3": {},
 }
 
 # @TODO: we might need to create a separate mapping for Llama

@@ -409,6 +409,11 @@ def get_model_hf(args, device):
             task_type=task_type,
             **method_kwargs,
         )
+    elif method == "hf_ia3":
+        peft_config = peft.IA3Config(
+            task_type=task_type,
+            **method_kwargs,
+        )
     else:
         raise ValueError(f"Can't find PEFT config object for method {method}, config string={args.adapter_config_string}")
 
