@@ -64,14 +64,15 @@ if __name__ == "__main__":
 
             logger.info(f"Running {experiment_name}")
             command = f"""
-                    python scripts/finetuning_seq2seq.py \
+                    python -m accelerate.commands.launch --num_processes=8 --main_process_port 1235 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
+                        scripts/finetuning_seq2seq.py \
                             --output_dir "{results_path}"\
                             --dataset_name "{_dataset_name}" \
                             --dataset_config_name "{_dataset_config_name}" \
                             --model_name_or_path {model} \
                             --adapter_config_string {adapter_config_string} \
                             --per_device_train_batch_size {_batch_size} \
-                            --total_batch_size {_batch_size} \
+                            --total_batch_size 32 \
                             --max_source_length 512 \
                             --max_target_length {_max_target_length} \
                             --num_beams 5 \
