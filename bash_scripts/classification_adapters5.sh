@@ -10,11 +10,11 @@ for adapter_config_string in \
     "unipelt" "prefix_tuning" "prefix_tuning_flat" "mam"
     #"pfeiffer" "houlsby" "scaled_parallel"
     #"compacter" "compacter++" "lora" "ia3"
-    #"ln_tuning" "full_tuning" 
+    #"ln_tuning" "full_tuning"
 do
 
 for dataset_config_name in \
-    "cb" "copa" "rte" "boolq" 
+    "cb" "copa" "rte" "boolq"
 do
 
     export experiment_name="${model}_${dataset_name}_${dataset_config_name}_${adapter_config_string}"
@@ -44,7 +44,6 @@ do
             --num_beams 5 \
             --learning_rate $lr \
             --num_train_epochs 3 \
-            --wandb_project "PEFT_comparison_v2" \
 
 done
 done

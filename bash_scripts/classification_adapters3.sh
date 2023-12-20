@@ -45,7 +45,7 @@ do
             --num_beams 5 \
             --learning_rate $lr \
             --num_train_epochs 3 \
-            --wandb_project "PEFT_comparison_v2" \
+            --wandb_project "PEFT_Comparison" \
 
 done
 done

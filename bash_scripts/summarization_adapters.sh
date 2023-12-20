@@ -5,13 +5,13 @@
 set -e
 
 export model="t5-3b"
-export adapter_config_string="houlsby"
-export learning_rate=3e-3
+export adapter_config_string="full_tuning"
+export learning_rate=1e-3
 export weight_decay=0.1
 export seed=1
 export experiment_name="${model}_cnn_${adapter_config_string}_lr${learning_rate}_wd${weight_decay}_seed${seed}"
 echo "Starting experiment $experiment_name"
-python -m accelerate.commands.launch --main_process_port 1235 --num_processes=4 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
+python -m accelerate.commands.launch --num_processes=8 --main_process_port 1235 --num_machines 1 --mixed_precision bf16 --dynamo_backend no \
     scripts/finetuning_seq2seq.py \
         --output_dir "results/$experiment_name"\
         --dataset_name "cnn_dailymail" \
@@ -19,9 +19,9 @@ python -m accelerate.commands.launch --main_process_port 1235 --num_processes=4 
         --preprocessing_num_workers 12 \
         --model_name_or_path $model \
         --adapter_config_string $adapter_config_string \
-        --per_device_train_batch_size 2 \
+        --per_device_train_batch_size 4 \
         --total_batch_size 32 \
-        --max_source_length 1024 \
+        --max_source_length 512 \
         --max_target_length 128 \
         --num_beams 3 \
         --learning_rate $learning_rate \
