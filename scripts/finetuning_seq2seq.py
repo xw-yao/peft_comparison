@@ -91,6 +91,7 @@ def parse_args():
     parser.add_argument("--source_prefix", type=str, default="", help="A prefix to add before every source text, useful for T5 models.")
     parser.add_argument("--preprocessing_num_workers", type=int, default=8, help="The number of processes to use for the preprocessing.")
     parser.add_argument("--subsample_data", type=int, default=None, help="If passed, will subsample the dataset to this many examples. (debug only)")
+    parser.add_argument("--skip_test_eval", action="store_true", help="If passed, will skip the final test evaluation (still final eval on validation).")
 
     # Target Text Configuration
     parser.add_argument("--max_target_length", type=int, default=128, help="The maximum total sequence length for target text after tokenization. Sequences longer than this will be truncated, sequences shorter will be padded during evaluate and predict.")
@@ -1118,7 +1119,7 @@ def main():
         logger.warning(f"best_results_dict is None, no evaluation was done during training")
 
     # Eval on test set
-    if "test" in raw_datasets:
+    if "test" in raw_datasets and not args.skip_test_eval:
         logger.info(f"Final evaluation, test set, {update_step=}")
         result = evaluate_model(
             model=model,

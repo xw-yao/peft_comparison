@@ -102,7 +102,7 @@ if __name__ == "__main__":
                             --adapter_config_string "{adapter_config_string}" \
                             --per_device_train_batch_size {batch_size} \
                             --total_batch_size 32 \
-                            --subsample_data {n_iters * 32} \
+                            --subsample_data {32 * max_eval_steps} \
                             --max_source_length 512 \
                             --max_target_length {max_target_length} \
                             --num_beams 3 \
