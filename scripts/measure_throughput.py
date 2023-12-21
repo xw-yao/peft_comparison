@@ -56,7 +56,7 @@ adapter_config_strings = [
 
 default_launch_command = "python"
 distributed_launch_command = "python -m accelerate.commands.launch --num_processes=8 --main_process_port 1235 --num_machines 1 --mixed_precision bf16 --dynamo_backend no"
-stage3_launch_command = "python -m accelerate.commands.launch --config_file accelerate_config_stage3_no_offload.json"
+stage3_launch_command = "python -m accelerate.commands.launch --config_file accelerate_config_stage3_no_offload.yaml"
 
 
 if __name__ == "__main__":
