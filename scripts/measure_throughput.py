@@ -1,6 +1,6 @@
 import os
 import subprocess
-import json
+import time
 import argparse
 
 import wandb
@@ -68,6 +68,7 @@ if __name__ == "__main__":
     errors = []
 
     for dataset in args.datasets:
+        _time = time.time()
         dataset_name = "super_glue" if dataset in ["rte", "copa", "boolq"] else "cnn_dailymail"
         dataset_config_name = dataset if dataset in ["rte", "copa", "boolq"] else "3.0.0"
 
@@ -128,7 +129,8 @@ if __name__ == "__main__":
             errors.append((experiment_name, run_name, process.stderr))
             continue
 
-        logger.info(f"Finished {experiment_name}")
+        _time = time.time() - _time
+        logger.info(f"Finished {experiment_name} in {_time/60:.2f} minutes")
 
     wandb.init(project="adapter_throughput")
     if len(errors) > 0:
