@@ -65,6 +65,8 @@ if __name__ == "__main__":
     parser.add_argument("--load_in_8bit", action="store_true", default=False)
     args = parser.parse_args()
 
+    args.datasets = args.datasets.split(",")
+
     errors = []
 
     for adapter_config_string in adapter_config_strings:
