@@ -123,6 +123,7 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="If the training should continue from a checkpoint folder.")
+    parser.add_argument("--skip_initial_eval", action="store_true", help="If passed, will skip the initial evaluation before training.")
 
     # PEFT Configuration
     parser.add_argument("--adapter_config_string", default=None, type=str, help="The adapter config string to use for adapter-transformers")
@@ -1061,7 +1062,7 @@ def main():
                 step=update_step,
             )
 
-            if (update_step + 1) % args.eval_every_steps == 0 or update_step == 1:
+            if (update_step + 1) % args.eval_every_steps == 0 or (update_step == 1 and not args.skip_initial_eval):
                 logger.info(f"Evaluating model at, update step: {update_step}, global step: {global_step}")
                 result = evaluate_model(
                     model=model,

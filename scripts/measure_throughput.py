@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import time
 import argparse
@@ -75,10 +76,11 @@ if __name__ == "__main__":
             dataset_name = "super_glue" if dataset in ["rte", "copa", "boolq"] else "cnn_dailymail"
             dataset_config_name = dataset if dataset in ["rte", "copa", "boolq"] else "3.0.0"
 
-            batch_size = hparams[args.model][dataset_name]["batch_size"]
+            batch_size = hparams[args.model][dataset]["batch_size"]
 
             max_target_length = 8 if dataset_name != "cnn_dailymail" else 128
             n_iters = 50 if dataset_name != "cnn_dailymail" else 300  # enough for throughput to stabilize
+            max_eval_steps = 20
 
             launch_command = default_launch_command if args.model != "t5-11B" else stage3_launch_command
 
@@ -108,26 +110,27 @@ if __name__ == "__main__":
                             --weight_decay 0.1 \
                             --min_train_steps {n_iters} \
                             --max_train_steps {n_iters} \
+                            --max_eval_steps_durig_validation {max_eval_steps} \
+                            --skip_initial_eval \
                             --tags "throughput_estimation" \
-            """.strip()
+            """
             if args.load_in_8bit:
-                command += " --load_in_8bit"
+                command += "--load_in_8bit"
+            command = re.sub(' +', ' ', command.strip())
 
             logger.info(f"Running\n{command}")
-            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
+            process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             run_name = None
             for line in process.stdout:
                 print(line.rstrip())
                 if run_name is None and "View run at" in line:
                     run_name = line.split("View run at")[1].strip()
                     logger.info(f"Run name: {run_name}")
-                    break
 
             process.wait()
 
             if process.returncode != 0:
-                logger.error(f"Failed to run {experiment_name}")
+                logger.error(f"Failed to run {experiment_name}, error code {process.returncode}, run name {run_name}")
                 logger.error(process.stderr)
                 errors.append((experiment_name, run_name, process.stderr))
                 continue
