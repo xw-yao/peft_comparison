@@ -110,6 +110,7 @@ if __name__ == "__main__":
                             --weight_decay 0.1 \
                             --min_train_steps {n_iters} \
                             --max_train_steps {n_iters} \
+                            --eval_every_steps {n_iters * 2} \
                             --max_eval_steps_durig_validation {max_eval_steps} \
                             --skip_initial_eval \
                             --tags "throughput_estimation" \

@@ -891,6 +891,9 @@ def main():
     # The trackers initializes automatically on the main process.
     experiment_config = vars(args)
     experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
+    experiment_config["world_size"] = accelerator.num_processes
+    experiment_config["gpu_type"] = torch.cuda.get_device_name(0)
+
     if accelerator.is_main_process:
         wandb.config.update(experiment_config)
 
