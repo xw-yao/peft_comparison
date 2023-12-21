@@ -670,10 +670,10 @@ def main():
     if args.subsample_data is not None:
         logger.warning(f"Subsampling the dataset to {args.subsample_data} first examples.")
         # remember that it's dataset dict
-        def get_subsample_data(subset_name):
-            if subset_name == "train": return args.subsample_data
-            return max(100, args.subsample_data // 10)
-        raw_datasets = {k: v.select(range(get_subsample_data(k))) for k, v in raw_datasets.items()}
+        def get_subsample_data(subset):
+            return min(args.subsample_data, len(subset))
+
+        raw_datasets = {k: v.select(range(get_subsample_data(v))) for k, v in raw_datasets.items()}
         raw_datasets = datasets.DatasetDict(raw_datasets)
 
     _dataset_name_for_preprocessing = args.dataset_name
