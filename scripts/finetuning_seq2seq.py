@@ -1104,7 +1104,7 @@ def main():
         postprocess_fn=postprocess_fn,
         decoder_only=args.decoder_only
     )
-    if result[main_metric_name] > best_metric_value:
+    if result[main_metric_name] >= best_metric_value:
         logger.info(f"New best metric found: {result[main_metric_name]} at update step {update_step}")
         best_metric_value = result[main_metric_name]
         best_results_dict = result.copy()
@@ -1112,7 +1112,10 @@ def main():
     logger.info(pformat(result))
     accelerator.log(result, step=update_step)
 
-    accelerator.log(best_results_dict, step=update_step)
+    if best_results_dict is not None:
+        accelerator.log(best_results_dict, step=update_step)
+    else:
+        logger.warning(f"best_results_dict is None, no evaluation was done during training")
 
     # Eval on test set
     if "test" in raw_datasets:
