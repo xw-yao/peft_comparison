@@ -69,6 +69,8 @@ if __name__ == "__main__":
     args.datasets = args.datasets.split(",")
 
     errors = []
+    started_runs = 0
+    experiment_names_ran = []
 
     for adapter_config_string in adapter_config_strings:
         for dataset in args.datasets:
@@ -90,6 +92,8 @@ if __name__ == "__main__":
             if os.path.exists(results_path):
                 logger.info(f"{results_path} already exists, skipping")
                 continue
+            started_runs += 1
+            experiment_names_ran.append(experiment_name)
 
             logger.info(f"Running {experiment_name} for {n_iters} iterations")
             command = f"""
@@ -139,6 +143,10 @@ if __name__ == "__main__":
             _time = time.time() - _time
             logger.info(f"Finished {experiment_name} in {_time/60:.2f} minutes")
 
+    if started_runs == 0:
+        logger.info("No runs were started")
+        exit(0)
+
     wandb.init(project="adapter_throughput")
     if len(errors) > 0:
         table = wandb.Table(columns=["experiment_name", "run_name", "error"])
@@ -147,7 +155,13 @@ if __name__ == "__main__":
 
         wandb.log({"errors": table})
         logger.error("Finished with errors")
-        wandb.alert(title=f"Throughput estimation finished with {len(errors)} errors", text=f"{errors}")
+        wandb.alert(
+            title=f"Throughput estimation finished. Ran {started_runs} runs with {len(errors)} errors",
+            text=f"Ran: {experiment_names_ran}\nErrors: {errors}",
+        )
     else:
         logger.info("Finished successfully")
-        wandb.alert(title="Throughput estimation finished successfully", text="No errors")
+        wandb.alert(
+            title=f"Throughput estimation finished successfully. Ran {started_runs} runs",
+            text=f"Ran: {experiment_names_ran}",
+        )
