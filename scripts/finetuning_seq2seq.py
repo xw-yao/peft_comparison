@@ -673,6 +673,7 @@ def main():
             if subset_name == "train": return args.subsample_data
             return max(100, args.subsample_data // 10)
         raw_datasets = {k: v.select(range(get_subsample_data(k))) for k, v in raw_datasets.items()}
+        raw_datasets = datasets.DatasetDict(raw_datasets)
 
     _dataset_name_for_preprocessing = args.dataset_name
     if args.task_type == "classification":
