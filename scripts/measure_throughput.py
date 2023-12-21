@@ -82,7 +82,7 @@ if __name__ == "__main__":
             n_iters = 50 if dataset_name != "cnn_dailymail" else 300  # enough for throughput to stabilize
             max_eval_steps = 20
 
-            launch_command = default_launch_command if args.model != "t5-11B" else stage3_launch_command
+            launch_command = default_launch_command if args.model != "t5-11b" else stage3_launch_command
 
             experiment_name = f"{args.model}_{dataset_name}_{dataset_config_name}_{adapter_config_string}"
             results_path = f"results/{experiment_name}"
