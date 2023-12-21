@@ -36,21 +36,21 @@ datasets = [
 
 # "full_tuning" -- different
 adapter_config_strings = [
-    "houlsby"
-    "pfeiffer"
-    "scaled_parallel"
-    "lora"
-    "ln_tuning"
-    "hf_lora"
-    "hf_lora_all"
-    "hf_krona"
-    "compacter"
-    "compacter++"
-    "ia3"
-    "mam"
-    "prefix_tuning"
-    "prefix_tuning_flat"
-    "unipelt"
+    "houlsby",
+    "pfeiffer",
+    "scaled_parallel",
+    "lora",
+    "ln_tuning",
+    "hf_lora",
+    "hf_lora_all",
+    "hf_krona",
+    "compacter",
+    "compacter++",
+    "ia3",
+    "mam",
+    "prefix_tuning",
+    "prefix_tuning_flat",
+    "unipelt",
 ]
 
 default_launch_command = "python"
