@@ -102,7 +102,7 @@ if __name__ == "__main__":
             logger.info(f"Running\n{command}")
             process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             for line in process.stdout:
-                print(line.strip())
+                print(line.rstrip())
             process.wait()
 
             if process.returncode != 0:
@@ -164,7 +164,7 @@ if __name__ == "__main__":
             logger.info(f"Running\n{command}")
             process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             for line in process.stdout:
-                print(line.strip())
+                print(line.rstrip())
                 if "View run" in line:
                     run_links.append(line.strip())
             process.wait()
