@@ -84,7 +84,7 @@ if __name__ == "__main__":
 
             launch_command = default_launch_command if args.model != "t5-11B" else stage3_launch_command
 
-            experiment_name = f"{args.model}_{dataset_name}_{adapter_config_string}"
+            experiment_name = f"{args.model}_{dataset_name}_{dataset_config_name}_{adapter_config_string}"
             results_path = f"results/{experiment_name}"
 
             if os.path.exists(results_path):
