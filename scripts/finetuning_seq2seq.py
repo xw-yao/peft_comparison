@@ -1030,6 +1030,7 @@ def main():
 
             # log memory and thoughput
             if (update_step % 10) == 0:
+                # examples per second and batches per second are not computed correctly
                 tokens_in_update = tokens_seen - tokens_seen_before
                 peak_memory_usage = torch.cuda.max_memory_allocated() / (1024 ** 2)  # in megabytes
                 current_memory_usage = torch.cuda.memory_allocated() / (1024 ** 2)

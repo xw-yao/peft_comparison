@@ -81,10 +81,13 @@ if __name__ == "__main__":
             batch_size = hparams[args.model][dataset]["batch_size"]
 
             max_target_length = 8 if dataset_name != "cnn_dailymail" else 128
-            n_iters = 50 if dataset_name != "cnn_dailymail" else 300  # enough for throughput to stabilize
-            max_eval_steps = 20
+            n_iters = 51
+            if dataset_name == "cnn_dailymail":
+                n_iters = 300 if args.model != "t5-3b" else 61
+            max_eval_steps = 21
 
-            launch_command = default_launch_command if args.model != "t5-11b" else stage3_launch_command
+            # with some exceptional cases we don't need stage 3 (?)
+            launch_command = default_launch_command
 
             experiment_name = f"{args.model}_{dataset_name}_{dataset_config_name}_{adapter_config_string}"
             results_path = f"results/{experiment_name}"
@@ -106,7 +109,7 @@ if __name__ == "__main__":
                             --adapter_config_string "{adapter_config_string}" \
                             --per_device_train_batch_size {batch_size} \
                             --total_batch_size 32 \
-                            --subsample_data {32 * max_eval_steps} \
+                            --subsample_data 500 \
                             --max_source_length 512 \
                             --max_target_length {max_target_length} \
                             --num_beams 3 \
