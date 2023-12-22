@@ -40,7 +40,6 @@ adapter_config_strings = [
     "houlsby",
     "pfeiffer",
     "scaled_parallel",
-    "lora",
     "ln_tuning",
     "hf_lora",
     "hf_lora_all",
@@ -63,16 +62,26 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--datasets", required=True, type=str)
     parser.add_argument("--model", type=str, default="t5-large")
+    parser.add_argument("--adapter_config_strings", type=str, default=",".join(adapter_config_strings))
     parser.add_argument("--load_in_8bit", action="store_true", default=False)
+    parser.add_argument("--suffix", type=str, default="")
+
     args = parser.parse_args()
 
+    logger.info(f"Starting the script with aruments:")
+    logger.info("*" * 40)
+    for k, v in vars(args).items():
+        logger.info(f"{k:30}: {v}")
+    logger.info("*" * 40)
+
     args.datasets = args.datasets.split(",")
+    args.adapter_config_strings = args.adapter_config_strings.split(",")
 
     errors = []
     started_runs = 0
     experiment_names_ran = []
 
-    for adapter_config_string in adapter_config_strings:
+    for adapter_config_string in args.adapter_config_strings:
         for dataset in args.datasets:
             _time = time.time()
             dataset_name = "super_glue" if dataset in ["rte", "copa", "boolq"] else "cnn_dailymail"
@@ -82,21 +91,23 @@ if __name__ == "__main__":
 
             max_target_length = 8 if dataset_name != "cnn_dailymail" else 128
             n_iters = 51
-            if dataset_name == "cnn_dailymail":
-                n_iters = 300 if args.model != "t5-3b" else 61
             max_eval_steps = 21
 
             # with some exceptional cases we don't need stage 3 (?)
             launch_command = default_launch_command
 
             experiment_name = f"{args.model}_{dataset_name}_{dataset_config_name}_{adapter_config_string}"
+            experiment_name += args.suffix
             results_path = f"results/{experiment_name}"
 
-            if os.path.exists(results_path):
-                logger.info(f"{results_path} already exists, skipping")
+            _results_file = results_path + "/all_results.json"
+            if os.path.exists(_results_file):
+                logger.info(f"{_results_file} already exists, skipping")
                 continue
+
             started_runs += 1
             experiment_names_ran.append(experiment_name)
+            # n_iters * batch_size should be a good idea as long as n_iters is small, because batch size is microbatch size
 
             logger.info(f"Running {experiment_name} for {n_iters} iterations")
             command = f"""
@@ -109,7 +120,7 @@ if __name__ == "__main__":
                             --adapter_config_string "{adapter_config_string}" \
                             --per_device_train_batch_size {batch_size} \
                             --total_batch_size 32 \
-                            --subsample_data 500 \
+                            --subsample_data {n_iters * batch_size} \
                             --max_source_length 512 \
                             --max_target_length {max_target_length} \
                             --num_beams 3 \
