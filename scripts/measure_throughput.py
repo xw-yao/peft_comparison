@@ -65,8 +65,13 @@ if __name__ == "__main__":
     parser.add_argument("--adapter_config_strings", type=str, default=",".join(adapter_config_strings))
     parser.add_argument("--load_in_8bit", action="store_true", default=False)
     parser.add_argument("--suffix", type=str, default="")
+    parser.add_argument("--eval_only", action="store_true", default=False)
+    parser.add_argument("--extra_tags", type=str, default="")
 
     args = parser.parse_args()
+
+    if args.eval_only:
+        logger.info("Will only do eval, no gradient updates. This is useful for the models that are too large for training, but small enough to inference on a single GPU")
 
     logger.info(f"Starting the script with aruments:")
     logger.info("*" * 40)
@@ -90,8 +95,13 @@ if __name__ == "__main__":
             batch_size = hparams[args.model][dataset]["batch_size"]
 
             max_target_length = 8 if dataset_name != "cnn_dailymail" else 128
+            if args.eval_only:
+                max_target_length = 1
+
             n_iters = 51
             max_eval_steps = 21
+            if args.eval_only:
+                max_eval_steps = 51
 
             # with some exceptional cases we don't need stage 3 (?)
             launch_command = default_launch_command
@@ -108,6 +118,11 @@ if __name__ == "__main__":
             started_runs += 1
             experiment_names_ran.append(experiment_name)
             # n_iters * batch_size should be a good idea as long as n_iters is small, because batch size is microbatch size
+            _tags = f"throughput_estimation"
+            if args.eval_only:
+                _tags = f"throughput_estimation_eval"
+            if args.extra_tags:
+                _tags += f",{args.extra_tags}"
 
             logger.info(f"Running {experiment_name} for {n_iters} iterations")
             command = f"""
@@ -123,18 +138,20 @@ if __name__ == "__main__":
                             --subsample_data {n_iters * batch_size} \
                             --max_source_length 512 \
                             --max_target_length {max_target_length} \
-                            --num_beams 3 \
+                            --num_beams 1 \
                             --learning_rate 1e-3 \
                             --weight_decay 0.1 \
                             --min_train_steps {n_iters} \
                             --max_train_steps {n_iters} \
                             --eval_every_steps {n_iters * 2} \
                             --max_eval_steps_durig_validation {max_eval_steps} \
-                            --skip_initial_eval \
-                            --tags "throughput_estimation" \
+                            --tags "{_tags}" \
             """
             if args.load_in_8bit:
                 command += "--load_in_8bit"
+            if args.eval_only:
+                command += "--eval_throughput_estimation"
+
             command = re.sub(' +', ' ', command.strip())
 
             logger.info(f"Running\n{command}")
@@ -170,12 +187,14 @@ if __name__ == "__main__":
         wandb.log({"errors": table})
         logger.error("Finished with errors")
         wandb.alert(
-            title=f"Throughput estimation finished. Ran {started_runs} runs with {len(errors)} errors",
+            title=f"Eval Throughput estimation finished. Ran {started_runs} runs with {len(errors)} errors",
             text=f"Ran: {experiment_names_ran}\nErrors: {errors}",
+            level=wandb.AlertLevel.WARN,
         )
     else:
         logger.info("Finished successfully")
         wandb.alert(
-            title=f"Throughput estimation finished successfully. Ran {started_runs} runs",
+            title=f"Eval Throughput estimation finished successfully. Ran {started_runs} runs",
             text=f"Ran: {experiment_names_ran}",
+            level=wandb.AlertLevel.INFO,
         )

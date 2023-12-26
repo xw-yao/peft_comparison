@@ -1,6 +1,8 @@
 # folders to ignore
 results
 wandb
+wandb_results
+sbatch_scripts
 log
 
 # Byte-compiled / optimized / DLL files

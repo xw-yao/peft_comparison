@@ -125,6 +125,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="If the training should continue from a checkpoint folder.")
     parser.add_argument("--skip_initial_eval", action="store_true", help="If passed, will skip the initial evaluation before training.")
+    parser.add_argument("--eval_throughput_estimation", action="store_true", help="If passed, will only run the initial evaluation and no training (used to estimate test throughput cheaply)")
+    parser.add_argument("--wandb_team", type=str, default="text_machine_lab_babylm", help="Name of the wandb team to use")
 
     # PEFT Configuration
     parser.add_argument("--adapter_config_string", default=None, type=str, help="The adapter config string to use for adapter-transformers")
@@ -321,9 +323,13 @@ def get_model(args, device):
                 param.requires_grad = False
 
     elif args.adapter_config_string == "ln_tuning":
+        is_llama = "llama" in args.model_name_or_path.lower()
+        model_class = AutoModelForCausalLM if is_llama else AutoModelForSeq2SeqLM
+
         model = model_class.from_pretrained(
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
+            **({"use_flash_attention_2": True} if is_llama else {}),
         )
 
         # freeze all but LN parameters
@@ -463,6 +469,9 @@ def evaluate_model(
     first_10_predictions = []
     first_10_labels = []
 
+    throughput_tokens_list = []
+    prediction_lengths_list = []
+
     synced_gpus = None
     _ds_plugin = accelerator.state.deepspeed_plugin
     if _ds_plugin is not None and _ds_plugin.zero_stage == 3:
@@ -476,6 +485,8 @@ def evaluate_model(
             break
 
         unwrapped_model = accelerator.unwrap_model(model)
+
+        batch_start_time = time.time()
         generated_tokens = unwrapped_model.generate(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
@@ -485,9 +496,7 @@ def evaluate_model(
             do_sample=False,
             synced_gpus=synced_gpus,  # stage 3 requires synced gpus or generation may stall
         )
-
         update_time = time.time() - batch_start_time
-        batch_start_time = time.time()
 
         # track memory usage and throughput
         peak_memory_usage += torch.cuda.max_memory_allocated() / (1024 ** 2)
@@ -495,6 +504,12 @@ def evaluate_model(
         throughput_tokens += batch["input_ids"].numel() / update_time
         throughput_examples += batch["input_ids"].shape[0] / update_time
         throughput_batches += 1 / update_time
+
+        throughput_tokens_list.append(batch["input_ids"].numel() / update_time)
+        if decoder_only:
+            prediction_lengths_list.append(generated_tokens.shape[1] - batch["input_ids"].shape[1])
+        else:
+            prediction_lengths_list.append(generated_tokens.shape[1])
 
         if decoder_only:
             # replace token_ids corresponding to the input text (without the label text i.e. class label name or summary)
@@ -541,12 +556,22 @@ def evaluate_model(
     result["eval/throughput_examples"] = throughput_examples / (eval_step + 1)
     result["eval/throughput_batches"] = throughput_batches / (eval_step + 1)
 
+    # throughput_tokens_mean is a sanity check that it equals to eval/throughput_tokens
+    result["eval/throughput_tokens_mean"] = sum(throughput_tokens_list) / len(throughput_tokens_list)
+    # skip the first one because it's likely an outlier that will increase the std quite a bit and won't estimate what we want to measure
+    result["eval/throughput_tokens_std"] = torch.tensor(throughput_tokens_list[1:], dtype=torch.float32).std().item()
+    result["eval/prediction_lengths_mean"] = sum(prediction_lengths_list) / len(prediction_lengths_list)
+    result["eval/prediction_lengths_std"] = torch.tensor(prediction_lengths_list, dtype=torch.float32).std().item()
+
     logger.info("Logging predictions to wandb")
     if wandb.run is not None:
         table = wandb.Table(columns=["Targets", "Predictions"])
         for t, p in zip(first_10_labels, first_10_predictions):
             table.add_data(t, p)
         result["predicitons"] = table
+
+        wandb.log({"eval/throughput_tokens_hist": wandb.Histogram(throughput_tokens_list)})
+        wandb.log(result)
 
     model.train()
     logger.info(f"Evaluation took {time.time() - _time:.2f} seconds")
@@ -605,7 +630,7 @@ def main():
         args.wandb_project,
         init_kwargs={"wandb": {
             "tags": args.tags,
-            "entity": "text_machine_lab_babylm",
+            "entity": args.wandb_team,
         }})
 
     if accelerator.is_main_process:
@@ -676,6 +701,11 @@ def main():
 
         raw_datasets = {k: v.select(range(get_subsample_data(v))) for k, v in raw_datasets.items()}
         raw_datasets = datasets.DatasetDict(raw_datasets)
+
+        if args.eval_throughput_estimation:
+            logger.warning(f"Only initial eval will be performed, setting validation and test to train set to make sure we evaluate long enough")
+            raw_datasets["validation"] = raw_datasets["train"]
+            raw_datasets["test"] = raw_datasets["train"]
 
     _dataset_name_for_preprocessing = args.dataset_name
     if args.task_type == "classification":
@@ -847,7 +877,14 @@ def main():
         for name, param in model.named_parameters():
             if param.requires_grad:
                 logger.info(f"{name}: {param.numel():,}")
+
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    if args.eval_throughput_estimation:
+        del optimizer
+        logger.warning("Skipping training because --eval_throughput_estimation is set. Using fake optimizer to avoid potential OOM errors")
+        optimizer = torch.optim.AdamW([torch.zeros(1, requires_grad=True)], lr=1e-10)
+        for param in model.parameters():
+            param.requires_grad = False
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
@@ -1018,7 +1055,10 @@ def main():
                 outputs = model(**batch)
                 loss = outputs.loss
                 loss_for_backward = loss / args.gradient_accumulation_steps
-                accelerator.backward(loss_for_backward)
+                if args.eval_throughput_estimation:
+                    logger.warning("Not performing backward!")
+                else:
+                    accelerator.backward(loss_for_backward)
 
             if not is_update_step:
                 continue
@@ -1087,6 +1127,13 @@ def main():
                     logger.info(f"New best metric found: {result[main_metric_name]} at update step {update_step}")
                     best_metric_value = result[main_metric_name]
                     best_results_dict = result.copy()
+
+                if args.eval_throughput_estimation:
+                    # Another thing this option does it using a fake optimizer (see before the training loop)
+                    logger.info("Stopping training because `eval_throughput_estimation` is set.")
+                    wandb.finish()
+                    time.sleep(5)  # give wandb time to finish any async stuff it's doing
+                    exit(0)
 
     # final evaluation
     # @NOTE: we want to do atleast one evaluation with beam search
