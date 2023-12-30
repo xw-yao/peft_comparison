@@ -22,11 +22,11 @@ import os
 import argparse
 import json
 import math
+import psutil
 import os
 import random
 from pprint import pformat
 import time
-from contextlib import contextmanager
 
 import torch
 import torch.nn as nn
@@ -119,6 +119,7 @@ def parse_args():
     parser.add_argument("--eval_every_steps", type=int, default=None, help="Evaluate model after these many steps.")
     parser.add_argument("--lr_scheduler_type", type=SchedulerType, default="linear", help="The scheduler type to use, choices: linear, cosine, cosine_with_restarts, polynomial, constant, constant_with_warmup")
     parser.add_argument("--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler.")
+    parser.add_argument("--gradient_checkpointing", default=False, action="store_true", help="only used for full_tuning")
 
     # Output and Tracking
     parser.add_argument("--output_dir", type=str, default=None, help="Where to store the final model.")
@@ -134,7 +135,7 @@ def parse_args():
     # Memory Management
     parser.add_argument("--load_in_8bit", action="store_true", help="Enable 8bit quantization.")
     parser.add_argument("--load_in_4bit", action="store_true", help="Enable 4bit quantization.")
-    parser.add_argument("--torch_dtype", type=torch.dtype, default=torch.bfloat16, help="This sets the dtype of the remaining non quantized layers. 'bitsandbytes' library suggests to set the value to 'torch.float16' for 8 bit model and use the same dtype as the compute dtype for 4 bit model")
+    parser.add_argument("--torch_dtype", default=None, help="This sets the dtype of the remaining non quantized layers. 'bitsandbytes' library suggests to set the value to 'torch.float16' for 8 bit model and use the same dtype as the compute dtype for 4 bit model")
 
     # Weight and Biases Configuration
     parser.add_argument("--wandb_project", type=str, default="PEFT_Comparison", help="Name to be given to Weight and Biases logging repository")
@@ -183,6 +184,19 @@ def parse_args():
     if args.output_dir == "None":  # I am not sure why this happens
         args.output_dir = None
 
+    if args.torch_dtype is None:
+        args.torch_dtype = torch.bfloat16
+    else:
+        if args.torch_dtype == "float32":
+            args.torch_dtype = torch.float32
+        elif args.torch_dtype == "bfloat16":
+            args.torch_dtype = torch.bfloat16
+        else:
+            raise ValueError(f"Unknown torch dtype {args.torch_dtype}")
+
+    if args.adapter_config_string != "full_tuning":
+        args.gradient_checkpointing = None
+
     return args
 
 
@@ -216,6 +230,14 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
         logger.info(f"Using adapter config string: {adapter_config_string}")
         return adapter_config_string
 
+    if adapter_config_string == "mam-flat":
+        logger.info("Building default MAM config for T5. Non-default mam configuratoins need to be provided explicitly")
+        _prefix = f"prefix_tuning[flat=True,kv_size={model_config.d_kv},flat=True]"
+        _adapter = "scaled_parallel"
+        adapter_config_string = f"{_prefix}|{_adapter}"
+        logger.info(f"Using adapter config string: {adapter_config_string}")
+        return adapter_config_string
+
     return adapter_config_string
 
 
@@ -240,6 +262,7 @@ def load_model_with_adapters_and_lm_head(
         "torch_dtype": torch_dtype,
         "load_in_4bit": load_in_4bit,
         "load_in_8bit": load_in_8bit,
+        "low_cpu_mem_usage": True,
     }
     if "llama" in model_name_or_path.lower():
         constructor_kwargs["use_flash_attention_2"] = True
@@ -330,6 +353,7 @@ def get_model(args, device):
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
             **({"use_flash_attention_2": True} if is_llama else {}),
+            low_cpu_mem_usage=True,
         )
 
         # freeze all but LN parameters
@@ -353,7 +377,11 @@ def get_model(args, device):
             args.model_name_or_path,
             torch_dtype=args.torch_dtype,
             **({"use_flash_attention_2": True} if is_llama else {}),
+            low_cpu_mem_usage=True,
         )
+        if args.gradient_checkpointing:
+            logger.info("Using gradient checkpointing")
+            model.gradient_checkpointing_enable()
 
     # send to device if not quantized
     if (not args.load_in_8bit) and (not args.load_in_4bit):
@@ -389,6 +417,7 @@ def get_model_hf(args, device):
         load_in_4bit=args.load_in_4bit,
         load_in_8bit=args.load_in_8bit,
         **({"use_flash_attention_2": True} if is_llama else {}),
+        low_cpu_mem_usage=True,
     )
 
     if args.load_in_8bit:
@@ -543,10 +572,7 @@ def evaluate_model(
             logger.info(f"Example of predictions: {decoded_preds[0]}")
             logger.info(f"Example of labels: {labels_str[0]}")
 
-    if metric.name == "rouge":
-        result = metric.compute()#(use_stemmer=True)
-    else:
-        result = metric.compute()
+    result = metric.compute()
 
     # save performance and other metrics to track memory consumption and throughput
     result = {f"eval/{k}": round(v * 100, 4) for k, v in result.items()}
@@ -575,23 +601,63 @@ def evaluate_model(
 
     model.train()
     logger.info(f"Evaluation took {time.time() - _time:.2f} seconds")
+    torch.cuda.empty_cache()
     return result
 
 
-@contextmanager
-def gradient_synchronization_context(ddp_model, should_synchronize):
-    if should_synchronize or not isinstance(ddp_model, torch.nn.parallel.DistributedDataParallel):
-        yield
+def preprocess_function(
+        examples,
+        *,
+        source_prefix,
+        max_source_length,
+        max_target_length,
+        decoder_only,
+        is_eval,
+        tokenizer,
+        padding,
+    ):
+    inputs = examples["source_text"]
+    targets = examples["target_text"]
+    inputs = [source_prefix + inp for inp in inputs]
+
+    if not decoder_only:
+        # T5
+        model_inputs = tokenizer(inputs, max_length=max_source_length, padding=padding, truncation=True)
+        labels = tokenizer(targets, max_length=max_target_length, padding=padding, truncation=True)
+        if padding == "max_length":
+            labels["input_ids"] = [
+                [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
+            ]
+        model_inputs["labels"] = labels["input_ids"]
+        if is_eval:
+            model_inputs["metadata"] = [{"targets": t} for t in targets]
     else:
-        with ddp_model.no_sync():
-            yield
+        # @NOTE: the way we have written preprocessing and collation for llama,
+        # - set padding=False in preprocessing (so that we know what's the max_len in the batch)
+        # - set padding=True in collation (so that we can pad to the multiple of 8 > max_len in the batch)
+        # - we can set labels to input_ids because the token shifting is taken care of in the modeling_llaama file
+
+        if is_eval:
+            model_inputs = tokenizer(inputs, max_length=max_source_length, padding=False, truncation=True)
+        else:
+            inputs = [i + " " + t for i, t in zip(inputs, targets)]
+            model_inputs = tokenizer(inputs, max_length=max_source_length, padding=False, truncation=True)
+        model_inputs["labels"] = model_inputs["input_ids"]
+        if is_eval:
+            input_wo_label = tokenizer(inputs, max_length=max_source_length, padding=False, truncation=False)
+            input_wo_label = input_wo_label["input_ids"]
+            model_inputs["metadata"] = []
+            for idx in range(len(targets)):
+                model_inputs["metadata"].append({
+                    "targets": targets[idx],
+                    "input_len": len(input_wo_label[idx]),
+                })
+
+    return model_inputs
 
 
 def main():
     args = parse_args()
-    fingerprint_args = {k: v for k, v in vars(args).items() if k not in ["lr_scheduler_type", "torch_dtype"]}  # remove not serializable
-    hash_str = json.dumps(fingerprint_args, sort_keys=True)
-    hash_str += open(__file__, "r").read()
 
     if args.seed is not None:
         set_seed(args.seed)
@@ -605,7 +671,7 @@ def main():
 
     logger.info(f"Accelerator state: {accelerator.state}")
 
-    # It's important to get ths after the accelerator initialization
+    # It's important to get this after the accelerator initialization
     device = torch.cuda.current_device()
     args.device = device
 
@@ -624,6 +690,11 @@ def main():
     if accelerator.is_main_process and args.output_dir is not None:
         os.makedirs(args.output_dir, exist_ok=True)
 
+    accelerator.gradient_accumulation_steps = args.gradient_accumulation_steps
+    if accelerator.state.deepspeed_plugin is not None:
+        logger.info(f"Setting gradient accumulation steps to {args.gradient_accumulation_steps} for deepspeed")
+        accelerator.state.deepspeed_plugin.deepspeed_config["gradient_accumulation_steps"] = args.gradient_accumulation_steps
+
     accelerator.wait_for_everyone()
 
     accelerator.init_trackers(
@@ -641,12 +712,23 @@ def main():
         logger.info(f"{k:30}: {v}")
     logger.info("*" * 40)
 
+    mem = psutil.virtual_memory()
+    pretty_output = (
+        f"(CPU RAM) Total: {mem.total / (1024 ** 3):.2f} GB, "
+        f"Available: {mem.available / (1024 ** 3):.2f} GB, "
+        f"Used: {mem.used / (1024 ** 3):.2f} GB, "
+        f"Percentage: {mem.percent}%"
+    )
+    logger.info(pretty_output)
+
     logger.info("Loading model")
     # Load pretrained model and tokenizer
     use_adapters_library = not args.adapter_config_string.startswith("hf_")
     if use_adapters_library:
+        logger.info("Using get_model (adapters library)")
         model = get_model(args, device=device)
     else:
+        logger.info("Using get_model_hf")
         model = get_model_hf(args, device=device)
     torch.cuda.reset_peak_memory_stats()
 
@@ -684,7 +766,7 @@ def main():
 
     total_parameters = sum(dtype_counts.values())
     dtype_info = [f"{dtype}: {count} ({count / total_parameters * 100:.2f}%)" for dtype, count in dtype_counts.items()]
-    logger.info("Model dtypes: ", " | ".join(dtype_info))
+    logger.info("Model dtypes: " + " | ".join(dtype_info))
 
     # we need to add padding token to llama
     if args.decoder_only:
@@ -728,72 +810,36 @@ def main():
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     column_names = raw_datasets["train"].column_names
-    padding = "max_length" if args.pad_to_max_length else False
-    def preprocess_function(examples, is_eval=False, decoder_only=False):
-        inputs = examples["source_text"]
-        targets = examples["target_text"]
-        inputs = [args.source_prefix + inp for inp in inputs]
-
-        if not decoder_only:
-            # T5
-            model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=padding, truncation=True)
-            labels = tokenizer(text_target=targets, max_length=args.max_target_length, padding=padding, truncation=True)
-            if padding == "max_length":
-                labels["input_ids"] = [
-                    [(l if l != tokenizer.pad_token_id else -100) for l in label] for label in labels["input_ids"]
-                ]
-            model_inputs["labels"] = labels["input_ids"]
-            if is_eval:
-                model_inputs["metadata"] = [{"targets": t} for t in targets]
-
-        else:
-            # @NOTE: the way we have written preprocessing and collation for llama,
-            # - set padding=False in preprocessing (so that we know what's the max_len in the batch)
-            # - set padding=True in collation (so that we can pad to the multiple of 8 > max_len in the batch)
-            # - we can set labels to input_ids because the token shifting is taken care of in the modeling_llaama file
-            if is_eval:
-                model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=True)
-            else:
-                inputs = [i + " " + t for i, t in zip(inputs, targets)]
-                model_inputs = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=True)
-            model_inputs["labels"] = model_inputs["input_ids"]
-            if is_eval:
-                input_wo_label = tokenizer(inputs, max_length=args.max_source_length, padding=False, truncation=False)
-                input_wo_label = input_wo_label["input_ids"]
-                model_inputs["metadata"] = []
-                for idx in range(len(targets)):
-                    model_inputs["metadata"].append({
-                        "targets": targets[idx],
-                        "input_len": len(input_wo_label[idx]),
-                    })
-
-        return model_inputs
+    preprocess_kwargs = {
+        'source_prefix': args.source_prefix, 
+        'max_source_length': args.max_source_length, 
+        'max_target_length': args.max_target_length, 
+        'decoder_only': args.decoder_only, 
+        'is_eval': True, 
+        'tokenizer': tokenizer,
+        'padding': "max_length" if args.pad_to_max_length else False,
+    }
 
     with accelerator.main_process_first():
-        logger.warning("Using manual fingerprinting for dataset preprocessing")
-        fingerprint = str(hash(hash_str + "validation"))
         eval_dataset = raw_datasets["validation"].map(
             preprocess_function,
             batched=True,
             num_proc=args.preprocessing_num_workers,
             remove_columns=column_names,
             desc="Running tokenizer on val dataset  ",
-            fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
-            new_fingerprint=fingerprint,
+            fn_kwargs=preprocess_kwargs,
         )
         test_dataset = eval_dataset
         if "test" in raw_datasets:
-            fingerprint = str(hash(hash_str + "test"))
             test_dataset = raw_datasets["test"].map(
                 preprocess_function,
                 batched=True,
                 num_proc=args.preprocessing_num_workers,
                 remove_columns=column_names,
-                fn_kwargs={"is_eval": True, "decoder_only": args.decoder_only},
-                new_fingerprint=fingerprint,
+                fn_kwargs=preprocess_kwargs,
             )
 
-        fingerprint = str(hash(hash_str + "train"))
+        preprocess_kwargs["is_eval"] = False
         train_dataset = raw_datasets["train"].map(
             preprocess_function,
             batched=True,
@@ -801,8 +847,7 @@ def main():
             num_proc=args.preprocessing_num_workers,
             remove_columns=column_names,
             desc="Running tokenizer on train dataset",
-            fn_kwargs={"decoder_only": args.decoder_only},
-            new_fingerprint=fingerprint,
+            fn_kwargs=preprocess_kwargs,
         )
 
     if len(raw_datasets["validation"]) < 1_000:
@@ -1046,21 +1091,12 @@ def main():
                 t_text = tokenizer.decode(t_ids, skip_special_tokens=False)
                 logger.info(f"Labels text: {t_text}")
 
-            is_update_step = bool(
-                global_step % args.gradient_accumulation_steps == 0
-                or global_step == len(train_dataloader) - 1
-            )
-
-            with gradient_synchronization_context(model, should_synchronize=is_update_step):
+            with accelerator.accumulate(model):
                 outputs = model(**batch)
                 loss = outputs.loss
-                loss_for_backward = loss / args.gradient_accumulation_steps
-                if args.eval_throughput_estimation:
-                    logger.warning("Not performing backward!")
-                else:
-                    accelerator.backward(loss_for_backward)
+                accelerator.backward(loss)
 
-            if not is_update_step:
+            if not accelerator.sync_gradients:
                 continue
             # the code below is only executed on the update step
 
@@ -1122,6 +1158,8 @@ def main():
                     postprocess_fn=postprocess_fn,
                     decoder_only=args.decoder_only
                 )
+                torch.cuda.empty_cache()
+
                 accelerator.log(result, step=update_step)
                 if result[main_metric_name] > best_metric_value:
                     logger.info(f"New best metric found: {result[main_metric_name]} at update step {update_step}")
