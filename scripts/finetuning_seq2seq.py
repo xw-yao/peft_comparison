@@ -55,9 +55,7 @@ from tqdm.auto import tqdm, trange
 from loguru import logger
 
 import peft
-from peft import prepare_model_for_int8_training
 import adapters
-from adapters import LlamaAdapterModel, T5AdapterModel
 
 import peft_comparison
 import peft_comparison.utils
@@ -194,8 +192,9 @@ def parse_args():
         else:
             raise ValueError(f"Unknown torch dtype {args.torch_dtype}")
 
-    if args.adapter_config_string != "full_tuning":
-        args.gradient_checkpointing = None
+    if args.adapter_config_string == "full_tuning":
+        if args.load_in_8bit or args.load_in_4bit:
+            raise ValueError(f"Full tuning can't be applied to quantized models")
 
     return args
 
@@ -241,52 +240,6 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
     return adapter_config_string
 
 
-def load_model_with_adapters_and_lm_head(
-        *,
-        hf_model_class,
-        adapters_model_class,
-        model_name_or_path,
-        load_in_4bit=False,
-        load_in_8bit=False,
-        torch_dtype=None,
-    ):
-    """
-    This function requires Adapters branch of the Adapter-hub library:
-    https://github.com/adapter-hub/adapter-transformers/tree/adapters
-
-    """
-    # @NOTE: we are using torch.float32 to overcome the compatibility issues with the new Adapters library
-    # Currently testing if bf16 would work
-    torch_dtype = torch_dtype or torch.float32
-    constructor_kwargs = {
-        "torch_dtype": torch_dtype,
-        "load_in_4bit": load_in_4bit,
-        "load_in_8bit": load_in_8bit,
-        "low_cpu_mem_usage": True,
-    }
-    if "llama" in model_name_or_path.lower():
-        constructor_kwargs["use_flash_attention_2"] = True
-    logger.info(f"Loading model with kwargs {pformat(constructor_kwargs)}")
-
-    # first we load the reference model from huggingface
-    model_ref = hf_model_class.from_pretrained(model_name_or_path, **constructor_kwargs)
-    lm_head_parameters = model_ref.lm_head.weight
-    del model_ref
-    torch.cuda.empty_cache()
-
-    # load the Adapters version of the Llama model
-    model = adapters_model_class.from_pretrained(model_name_or_path, **constructor_kwargs)
-
-    if hasattr(model, "add_seq2seq_lm_head"):
-        model.add_seq2seq_lm_head("lm_head")
-    else:
-        model.add_causal_lm_head("lm_head")
-
-    model.heads.lm_head[0].weight = lm_head_parameters
-
-    return model
-
-
 def get_model(args, device):
     if "t5" in args.model_name_or_path and args.source_prefix is None and args.task_type == "summarization":
         logger.warning(
@@ -296,29 +249,35 @@ def get_model(args, device):
 
     # model
     model_class = AutoModelForSeq2SeqLM
-    adapters_model_class = T5AdapterModel
-    if "llama" in args.model_name_or_path.lower():
+    constructor_kwargs = {
+        "torch_dtype": args.torch_dtype,
+        "load_in_4bit": args.load_in_4bit,
+        "load_in_8bit": args.load_in_8bit,
+        "low_cpu_mem_usage": True,
+    }
+    is_llama = "llama" in args.model_name_or_path.lower()
+    if is_llama:
         logger.info("Using LLaMA model")
         model_class = AutoModelForCausalLM
-        adapters_model_class = LlamaAdapterModel
+        constructor_kwargs["use_flash_attention_2"] = True
+
+    logger.info(f"Loading model with kwargs {pformat(constructor_kwargs)}")
+
+    model = model_class.from_pretrained(args.model_name_or_path, **constructor_kwargs)
+    if args.gradient_checkpointing:
+        logger.info("Using gradient checkpointing")
+        model.gradient_checkpointing_enable()
 
     # add peft modules
     if not args.adapter_config_string in ["bitfit", "ln_tuning", "attn_tuning", "full_tuning"]:
-        model = load_model_with_adapters_and_lm_head(
-            hf_model_class=model_class,
-            adapters_model_class=adapters_model_class,
-            model_name_or_path=args.model_name_or_path,
-            load_in_4bit=args.load_in_4bit,
-            load_in_8bit=args.load_in_8bit,
-            torch_dtype=args.torch_dtype,
-        )
+        adapters.init(model)
 
         # freeze all parameters
         for param in model.parameters():
             param.requires_grad = False
 
         # add PEFT
-        if adapters_model_class is T5AdapterModel:
+        if not is_llama:
             # T5-3B and T5-11B have a weird setup where key_size != hidden_size // num_heads
             args.adapter_config_string = preprocess_adapter_config_string_for_t5(
                 adapter_config_string=args.adapter_config_string,
@@ -335,27 +294,12 @@ def get_model(args, device):
                     param.requires_grad = True
 
     elif args.adapter_config_string == "bitfit":
-        model = model_class.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=args.torch_dtype,
-        )
-
         # freeze all but bias parameters
         for name, param in model.named_parameters():
             if not "bias" in name:
                 param.requires_grad = False
 
     elif args.adapter_config_string == "ln_tuning":
-        is_llama = "llama" in args.model_name_or_path.lower()
-        model_class = AutoModelForCausalLM if is_llama else AutoModelForSeq2SeqLM
-
-        model = model_class.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=args.torch_dtype,
-            **({"use_flash_attention_2": True} if is_llama else {}),
-            low_cpu_mem_usage=True,
-        )
-
         # freeze all but LN parameters
         for name, param in model.named_parameters():
             # LlaMa layer norm key: input_layernorm, post_attention_layernorm
@@ -369,19 +313,6 @@ def get_model(args, device):
     elif args.adapter_config_string == "full_tuning":
         if args.load_in_8bit or args.load_in_4bit:
             logger.error(f"Full tuning can't be applied to quantized models")
-
-        is_llama = "llama" in args.model_name_or_path.lower()
-        model_class = AutoModelForCausalLM if is_llama else AutoModelForSeq2SeqLM
-
-        model = model_class.from_pretrained(
-            args.model_name_or_path,
-            torch_dtype=args.torch_dtype,
-            **({"use_flash_attention_2": True} if is_llama else {}),
-            low_cpu_mem_usage=True,
-        )
-        if args.gradient_checkpointing:
-            logger.info("Using gradient checkpointing")
-            model.gradient_checkpointing_enable()
 
     # send to device if not quantized
     if (not args.load_in_8bit) and (not args.load_in_4bit):
@@ -421,7 +352,7 @@ def get_model_hf(args, device):
     )
 
     if args.load_in_8bit:
-        model = prepare_model_for_int8_training(model)
+        model = peft.prepare_model_for_int8_training(model)
 
     method, method_kwargs = peft_comparison.utils.parse_config_string(args.adapter_config_string)
     if method not in peft_comparison.mappings.hf_adapter_config_string_to_peft_args:
