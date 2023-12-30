@@ -177,6 +177,7 @@ if __name__ == "__main__":
         # average and std over seeds
         wandb.init(project="automated_peft_comparison")
         logger.info(f"Finished experiments for {dataset_name}, averaging results")
+
         results_list = []
         all_seeds = [default_seed] + other_seeds
         for seed in all_seeds:
@@ -196,10 +197,17 @@ if __name__ == "__main__":
         logger.info(f"Run links:")
         logger.info('\n'.join(run_links))
 
+        run_links_to_report = [""] * len(results_list)
+        # reverse order so that if the first runs are missing we still get the last ones assigned correctly
+        for i in range(len(results_list) - 1, -1, -1):
+            if i >= len(run_links): continue
+            run_links_to_report[i] = run_links[i]
+
         dataset_2_results[dataset_name] = {
             "avg": avg,
             "std": std,
-            metric_name: results_list
+            metric_name: results_list,
+            "run_links": run_links_to_report,
         }
 
         try:
@@ -215,9 +223,9 @@ if __name__ == "__main__":
             results_table = wandb.Table(data=[[dataset_name, avg, std]], columns=["dataset", "avg", "std"])
             wandb.log({"results_table": results_table})
 
-            results_table2 = wandb.Table(columns=["dataset", "seed", metric_name])
-            for seed, metric in zip(all_seeds, results_list):
-                results_table2.add_data(dataset_name, seed, metric)
+            results_table2 = wandb.Table(columns=["dataset", "seed", metric_name, "url"])
+            for seed, metric, link in zip(all_seeds, results_list, run_links_to_report):
+                results_table2.add_data(dataset_name, seed, metric, link)
             wandb.log({"results_full": results_table2})
 
         except Exception as e:
