@@ -17,6 +17,30 @@ hf_adapter_config_string_to_peft_args = {
         "target_modules": ["q", "v"],
     },
     "hf_ia3": {},
+    "hf_prompt_tuning_L": {
+            "peft_type": "PROMPT_TUNING",
+            "num_virtual_tokens": 20,
+            "num_transformer_submodules": 1,
+            "token_dim": 1024,
+            "num_attention_heads": 16,
+            "num_layers": 24,
+    },
+    "hf_prompt_tuning_3b": {
+            "peft_type": "PROMPT_TUNING",
+            "num_virtual_tokens": 20,
+            "num_transformer_submodules": 1,
+            "token_dim": 1024,
+            "num_attention_heads": 32,
+            "num_layers": 24,
+    },
+    "hf_prompt_tuning_11b": {
+            "peft_type": "PROMPT_TUNING",
+            "num_virtual_tokens": 20,
+            "num_transformer_submodules": 1,
+            "token_dim": 1024,
+            "num_attention_heads": 128,
+            "num_layers": 24,
+    },
 }
 
 # @TODO: we might need to create a separate mapping for Llama

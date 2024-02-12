@@ -57,6 +57,7 @@ from loguru import logger
 import peft
 import adapters
 
+
 import peft_comparison
 import peft_comparison.utils
 import peft_comparison.text2text_utils
@@ -129,6 +130,7 @@ def parse_args():
 
     # PEFT Configuration
     parser.add_argument("--adapter_config_string", default=None, type=str, help="The adapter config string to use for adapter-transformers")
+    parser.add_argument("--num_layers", default=1, type=int, help="Number of layers to unfreeze")
 
     # Memory Management
     parser.add_argument("--load_in_8bit", action="store_true", help="Enable 8bit quantization.")
@@ -215,8 +217,8 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
     if adapter_config_string == "unipelt":
         logger.info("Building default unipelt config for T5. Non-default unipelt configuratoins need to be provided explicitly")
         _lora = "lora[r=8,use_gating=True]"
-        _prefix = f"prefix_tuning[prefix_length=10,use_gating=True,kv_size={model_config.d_kv}]"
-        _adapter = "seq_bn[reduction_factor=16,use_gating=True]"
+        _prefix = f"prefix_tuning[prefix_length=10,flat=True,use_gating=True,kv_size={model_config.d_kv}]"
+        _adapter = "houlsby[use_gating=True]"
         adapter_config_string = f"{_lora}|{_prefix}|{_adapter}"
         logger.info(f"Using adapter config string: {adapter_config_string}")
         return adapter_config_string
@@ -224,7 +226,7 @@ def preprocess_adapter_config_string_for_t5(adapter_config_string, model_config)
     if adapter_config_string == "mam":
         logger.info("Building default MAM config for T5. Non-default mam configuratoins need to be provided explicitly")
         _prefix = f"prefix_tuning[bottleneck_size=800,kv_size={model_config.d_kv}]"
-        _adapter = "par_bn"
+        _adapter = "scaled_parallel"
         adapter_config_string = f"{_prefix}|{_adapter}"
         logger.info(f"Using adapter config string: {adapter_config_string}")
         return adapter_config_string
@@ -269,7 +271,7 @@ def get_model(args, device):
         model.gradient_checkpointing_enable()
 
     # add peft modules
-    if not args.adapter_config_string in ["bitfit", "ln_tuning", "attn_tuning", "full_tuning"]:
+    if not args.adapter_config_string in ["bitfit", "ln_tuning", "attn_tuning", "full_tuning", "layer_unfreeze"]:
         adapters.init(model)
 
         # freeze all parameters
@@ -292,6 +294,16 @@ def get_model(args, device):
                 module.to(device)
                 for param in module.parameters():
                     param.requires_grad = True
+
+    elif args.adapter_config_string == "layer_unfreeze":
+        logger.info(f"Unfreezing last {args.num_layers} layers")
+        # customized to unfreeze last N layers
+        for param in model.parameters():
+            param.requires_grad = False
+
+        for block in model.decoder.block[-args.num_layers:]:
+            for param in block.parameters():
+                param.requires_grad = True
 
     elif args.adapter_config_string == "bitfit":
         # freeze all but bias parameters
@@ -360,6 +372,7 @@ def get_model_hf(args, device):
 
     default_kwargs = peft_comparison.mappings.hf_adapter_config_string_to_peft_args[method]
     method_kwargs = default_kwargs | method_kwargs
+    logger.info(f"Adapter mentod_kwargs: {method_kwargs}")
 
     if method in ["hf_lora", "hf_lora_all"]:
         peft_config = peft.LoraConfig(
@@ -380,6 +393,24 @@ def get_model_hf(args, device):
     elif method == "hf_ia3":
         peft_config = peft.IA3Config(
             task_type=task_type,
+            **method_kwargs,
+        )
+    elif method == "hf_prompt_tuning_L":
+        peft_config = peft.PromptTuningConfig(
+            task_type=task_type,
+            tokenizer_name_or_path=args.model_name_or_path,
+            **method_kwargs,
+        )
+    elif method == "hf_prompt_tuning_3b":
+        peft_config = peft.PromptTuningConfig(
+            task_type=task_type,
+            tokenizer_name_or_path=args.model_name_or_path,
+            **method_kwargs,
+        )
+    elif method == "hf_prompt_tuning_11b":
+        peft_config = peft.PromptTuningConfig(
+            task_type=task_type,
+            tokenizer_name_or_path=args.model_name_or_path,
             **method_kwargs,
         )
     else:
@@ -652,6 +683,12 @@ def main():
     )
     logger.info(pretty_output)
 
+    # tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_name_or_path,
+        model_max_length=max(args.max_source_length, args.max_target_length) + 2,  # void the annoying warning messge, +2 is for bos and eos
+    )
+
     logger.info("Loading model")
     # Load pretrained model and tokenizer
     use_adapters_library = not args.adapter_config_string.startswith("hf_")
@@ -662,12 +699,6 @@ def main():
         logger.info("Using get_model_hf")
         model = get_model_hf(args, device=device)
     torch.cuda.reset_peak_memory_stats()
-
-    # tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path,
-        model_max_length=max(args.max_source_length, args.max_target_length) + 2,  # void the annoying warning messge, +2 is for bos and eos
-    )
 
     if model.config.decoder_start_token_id is None:
         model.config.decoder_start_token_id = tokenizer.bos_token_id
